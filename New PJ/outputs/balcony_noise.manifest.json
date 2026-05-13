@@ -1,0 +1,26 @@
+{
+  "input_path": "C:\\Users\\ASUS\\Desktop\\New PJ\\samples\\real_audio\\balcony_noise.m4a",
+  "inferred_input_type": "audio",
+  "planned_output_paths": {
+    "prepared_audio_path": "C:\\Users\\ASUS\\Desktop\\New PJ\\tmp\\balcony_noise.prepared.wav",
+    "clean_audio_path": "C:\\Users\\ASUS\\Desktop\\New PJ\\outputs\\balcony_noise.denoised.wav",
+    "final_media_path": "C:\\Users\\ASUS\\Desktop\\New PJ\\outputs\\balcony_noise.denoised.wav"
+  },
+  "selected_engine": "ffmpeg-arnndn",
+  "stage_statuses": {
+    "validate": "completed_real",
+    "probe_input": "completed_real",
+    "prepare_audio": "completed_real",
+    "denoise": "completed_real",
+    "export_audio": "completed_real",
+    "write_manifest": "completed_real",
+    "eval": "completed_real"
+  },
+  "dry_run": false,
+  "final_status": "completed_real",
+  "manifest_path": "C:\\Users\\ASUS\\Desktop\\New PJ\\outputs\\balcony_noise.manifest.json",
+  "eval": {
+    "output_exists": true,
+    "output_is_non_empty": true
+  }
+}

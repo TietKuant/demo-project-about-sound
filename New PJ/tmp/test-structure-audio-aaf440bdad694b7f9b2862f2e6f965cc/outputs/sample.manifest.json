@@ -1,0 +1,26 @@
+{
+  "input_path": "C:\\Users\\ASUS\\Desktop\\New PJ\\tmp\\test-structure-audio-aaf440bdad694b7f9b2862f2e6f965cc\\sample.wav",
+  "inferred_input_type": "audio",
+  "planned_output_paths": {
+    "prepared_audio_path": "C:\\Users\\ASUS\\Desktop\\New PJ\\tmp\\test-structure-audio-aaf440bdad694b7f9b2862f2e6f965cc\\tmp\\sample.prepared.wav",
+    "clean_audio_path": "C:\\Users\\ASUS\\Desktop\\New PJ\\tmp\\test-structure-audio-aaf440bdad694b7f9b2862f2e6f965cc\\outputs\\sample.denoised.wav",
+    "final_media_path": "C:\\Users\\ASUS\\Desktop\\New PJ\\tmp\\test-structure-audio-aaf440bdad694b7f9b2862f2e6f965cc\\outputs\\sample.denoised.wav"
+  },
+  "selected_engine": "ffmpeg-arnndn",
+  "stage_statuses": {
+    "validate": "completed_real",
+    "probe_input": "completed_real",
+    "prepare_audio": "completed_real",
+    "denoise": "completed_real",
+    "export_audio": "completed_real",
+    "write_manifest": "completed_real",
+    "eval": "completed_real"
+  },
+  "dry_run": false,
+  "final_status": "completed_real",
+  "manifest_path": "C:\\Users\\ASUS\\Desktop\\New PJ\\tmp\\test-structure-audio-aaf440bdad694b7f9b2862f2e6f965cc\\outputs\\sample.manifest.json",
+  "eval": {
+    "output_exists": true,
+    "output_is_non_empty": true
+  }
+}

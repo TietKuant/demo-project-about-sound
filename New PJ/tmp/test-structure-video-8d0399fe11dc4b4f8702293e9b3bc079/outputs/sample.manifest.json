@@ -1,0 +1,26 @@
+{
+  "input_path": "C:\\Users\\ASUS\\Desktop\\New PJ\\tmp\\test-structure-video-8d0399fe11dc4b4f8702293e9b3bc079\\sample.mp4",
+  "inferred_input_type": "video",
+  "planned_output_paths": {
+    "prepared_audio_path": "C:\\Users\\ASUS\\Desktop\\New PJ\\tmp\\test-structure-video-8d0399fe11dc4b4f8702293e9b3bc079\\tmp\\sample.prepared.wav",
+    "clean_audio_path": "C:\\Users\\ASUS\\Desktop\\New PJ\\tmp\\test-structure-video-8d0399fe11dc4b4f8702293e9b3bc079\\outputs\\sample.denoised.wav",
+    "final_media_path": "C:\\Users\\ASUS\\Desktop\\New PJ\\tmp\\test-structure-video-8d0399fe11dc4b4f8702293e9b3bc079\\outputs\\sample.denoised.mp4"
+  },
+  "selected_engine": "ffmpeg-arnndn",
+  "stage_statuses": {
+    "validate": "completed_real",
+    "probe_input": "completed_real",
+    "prepare_audio": "completed_real",
+    "denoise": "completed_real",
+    "remux_video": "completed_real",
+    "write_manifest": "completed_real",
+    "eval": "completed_real"
+  },
+  "dry_run": false,
+  "final_status": "completed_real",
+  "manifest_path": "C:\\Users\\ASUS\\Desktop\\New PJ\\tmp\\test-structure-video-8d0399fe11dc4b4f8702293e9b3bc079\\outputs\\sample.manifest.json",
+  "eval": {
+    "output_exists": true,
+    "output_is_non_empty": true
+  }
+}
