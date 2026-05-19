@@ -8,8 +8,10 @@ version = "0.1.0"
 description = "Minimal architecture-first dry-run scaffold for an offline audio/video denoise demo."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "noisereduce",
+    "soundfile",
+]
 
 [project.scripts]
 offline-denoise-demo = "src.pipeline.run_pipeline:main"
-

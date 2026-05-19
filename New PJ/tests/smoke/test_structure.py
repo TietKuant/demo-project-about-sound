@@ -41,6 +41,13 @@ class StructureSmokeTests(unittest.TestCase):
             output_path.write_bytes(b"placeholder-video-artifact")
         return subprocess.CompletedProcess(command, 0, "", "")
 
+    @staticmethod
+    def _mock_noisereduce_denoise(input_audio_path: str | Path, output_audio_path: str | Path) -> Path:
+        _ = Path(input_audio_path)
+        output_path = Path(output_audio_path)
+        StructureSmokeTests._write_sample_wav(output_path)
+        return output_path
+
     def test_contract_can_be_constructed(self) -> None:
         request = DenoiseRequest(
             input_path=Path("samples/input_audio/example.wav"),
@@ -49,6 +56,7 @@ class StructureSmokeTests(unittest.TestCase):
             keep_intermediates=False,
         )
         self.assertEqual(request.output_mode, "audio")
+        self.assertEqual(request.engine_name, "ffmpeg-arnndn")
 
     def test_engine_can_load_without_weights(self) -> None:
         engine = DeepFilterNetEngine()
@@ -139,6 +147,37 @@ class StructureSmokeTests(unittest.TestCase):
         self.assertEqual(payload["stage_statuses"]["denoise"], "completed_real")
         self.assertEqual(payload["stage_statuses"]["remux_video"], "completed_real")
         self.assertEqual(payload["selected_engine"], "ffmpeg-arnndn")
+
+    def test_pipeline_routes_to_noisereduce_engine_when_requested(self) -> None:
+        root = Path("tmp") / f"test-structure-noisereduce-{uuid.uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+        input_path = root / "sample.wav"
+        self._write_sample_wav(input_path)
+
+        request = DenoiseRequest(
+            input_path=input_path,
+            output_dir=root / "outputs",
+            output_mode="audio",
+            keep_intermediates=False,
+            engine_name="noisereduce",
+        )
+        with patch("src.media.ffmpeg_wrapper.subprocess.run", side_effect=self._mock_ffmpeg_run):
+            with patch("src.pipeline.run_pipeline.NoisereduceEngine.load", return_value=None):
+                with patch(
+                    "src.pipeline.run_pipeline.NoisereduceEngine.denoise",
+                    side_effect=self._mock_noisereduce_denoise,
+                ) as denoise_mock:
+                    result = run_pipeline(request)
+
+        self.assertEqual(result.engine_name, "noisereduce")
+        self.assertEqual(result.final_output_path.name, "sample.denoised.wav")
+        self.assertTrue(result.final_output_path.exists())
+        denoise_mock.assert_called_once()
+
+        manifest_path = Path(result.run_summary["manifest_path"])
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["selected_engine"], "noisereduce")
+        self.assertEqual(payload["stage_statuses"]["denoise"], "completed_real")
 
 if __name__ == "__main__":
     unittest.main()

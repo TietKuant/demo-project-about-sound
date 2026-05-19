@@ -7,7 +7,9 @@ from pathlib import Path
 
 from src.api.contracts import DenoiseRequest, DenoiseResult
 from src.eval.checks import evaluate_output_artifact
+from src.engine.base import DenoiseEngine
 from src.engine.ffmpeg_arnndn_engine import FFmpegArnndnEngine
+from src.engine.noisereduce_engine import NoisereduceEngine
 from src.io.paths import (
     derive_manifest_path,
     derive_output_mode,
@@ -24,8 +26,17 @@ def _log(message: str) -> None:
     print(message)
 
 
+def _build_engine(engine_name: str, ffmpeg_wrapper: FFmpegWrapper) -> DenoiseEngine:
+    """Return the selected denoise engine."""
+    if engine_name == "ffmpeg-arnndn":
+        return FFmpegArnndnEngine(ffmpeg_wrapper=ffmpeg_wrapper)
+    if engine_name == "noisereduce":
+        return NoisereduceEngine()
+    raise ValueError(f"Unsupported denoise engine: {engine_name}")
+
+
 def run_pipeline(request: DenoiseRequest, ffmpeg_wrapper: FFmpegWrapper | None = None) -> DenoiseResult:
-    """Run the arnndn pipeline and write a manifest artifact."""
+    """Run the denoise pipeline and write a manifest artifact."""
     stage_statuses: dict[str, str] = {}
 
     input_path = validate_input_path(request.input_path)
@@ -43,7 +54,7 @@ def run_pipeline(request: DenoiseRequest, ffmpeg_wrapper: FFmpegWrapper | None =
     stage_statuses["prepare_audio"] = "completed_real"
     _log(f"[prepare_audio] completed_real path={prepared_audio_path}")
 
-    engine = FFmpegArnndnEngine(ffmpeg_wrapper=ffmpeg)
+    engine = _build_engine(request.engine_name, ffmpeg)
     engine.load()
     denoised_audio_path = engine.denoise(
         prepared_audio_path,
@@ -117,6 +128,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional arnndn mix value passed to ffmpeg.",
     )
+    parser.add_argument(
+        "--engine",
+        choices=("ffmpeg-arnndn", "noisereduce"),
+        default="ffmpeg-arnndn",
+        help="Denoise engine to use.",
+    )
     return parser
 
 
@@ -133,6 +150,7 @@ def main() -> int:
             output_dir=output_dir,
             output_mode=output_mode,
             keep_intermediates=args.keep_intermediates,
+            engine_name=args.engine,
         )
         result = run_pipeline(request, ffmpeg_wrapper=FFmpegWrapper(arnndn_mix=args.arnndn_mix))
         _log(f"[result] status={result.status} output={result.final_output_path}")

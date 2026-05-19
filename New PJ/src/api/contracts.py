@@ -15,6 +15,7 @@ class DenoiseRequest:
     output_dir: Path
     output_mode: str
     keep_intermediates: bool = False
+    engine_name: str = "ffmpeg-arnndn"
 
 
 @dataclass(slots=True)
