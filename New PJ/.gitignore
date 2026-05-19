@@ -1,0 +1,18 @@
+
+# Python environment
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Package/build metadata
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Test/runtime temp artifacts
+tmp/test-structure-*/
