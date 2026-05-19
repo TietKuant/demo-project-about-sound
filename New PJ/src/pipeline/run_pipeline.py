@@ -7,9 +7,11 @@ from pathlib import Path
 
 from src.api.contracts import DenoiseRequest, DenoiseResult
 from src.eval.checks import evaluate_output_artifact
+from src.engine.ffmpeg_arnndn_engine import FFmpegArnndnEngine
 from src.io.paths import (
     derive_manifest_path,
     derive_output_mode,
+    derive_planned_output_path,
     infer_input_type,
     validate_input_path,
     validate_output_dir,
@@ -41,7 +43,12 @@ def run_pipeline(request: DenoiseRequest, ffmpeg_wrapper: FFmpegWrapper | None =
     stage_statuses["prepare_audio"] = "completed_real"
     _log(f"[prepare_audio] completed_real path={prepared_audio_path}")
 
-    denoised_audio_path = ffmpeg.denoise_audio(prepared_audio_path, input_path, output_dir)
+    engine = FFmpegArnndnEngine(ffmpeg_wrapper=ffmpeg)
+    engine.load()
+    denoised_audio_path = engine.denoise(
+        prepared_audio_path,
+        derive_planned_output_path(input_path, output_dir, output_mode="audio"),
+    )
     stage_statuses["denoise"] = "completed_real"
     _log(f"[denoise] completed_real path={denoised_audio_path}")
 
@@ -63,7 +70,7 @@ def run_pipeline(request: DenoiseRequest, ffmpeg_wrapper: FFmpegWrapper | None =
             "clean_audio_path": str(denoised_audio_path),
             "final_media_path": str(final_media_path),
         },
-        selected_engine="ffmpeg-arnndn",
+        selected_engine=engine.name,
         stage_statuses=stage_statuses,
         dry_run=False,
         final_status="completed_real",
@@ -85,7 +92,7 @@ def run_pipeline(request: DenoiseRequest, ffmpeg_wrapper: FFmpegWrapper | None =
         status="completed_real",
         final_output_path=final_media_path,
         intermediate_audio_path=prepared_audio_path,
-        engine_name="ffmpeg-arnndn",
+        engine_name=engine.name,
         run_summary=manifest_payload,
     )
 

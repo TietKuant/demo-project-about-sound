@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from src.api.contracts import DenoiseRequest
 from src.engine.deepfilternet_engine import DeepFilterNetEngine
+from src.engine.ffmpeg_arnndn_engine import FFmpegArnndnEngine
 from src.io.paths import derive_output_mode, infer_input_type
 from src.media.ffmpeg_wrapper import FFmpegWrapper
 from src.pipeline.run_pipeline import run_pipeline
@@ -64,10 +65,11 @@ class StructureSmokeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "ffmpeg is required"):
                 wrapper.probe_input("example.wav")
 
-    def test_ffmpeg_wrapper_raises_clear_error_when_model_missing(self) -> None:
+    def test_ffmpeg_arnndn_engine_raises_clear_error_when_model_missing(self) -> None:
         wrapper = FFmpegWrapper(arnndn_model_path=Path("models/arnndn/missing.rnnn"))
+        engine = FFmpegArnndnEngine(ffmpeg_wrapper=wrapper)
         with self.assertRaisesRegex(FileNotFoundError, "arnndn model file not found"):
-            wrapper.denoise_audio("input.wav", "source.wav", "outputs")
+            engine.load()
 
     def test_ffmpeg_wrapper_formats_windows_arnndn_model_path(self) -> None:
         wrapper = FFmpegWrapper(arnndn_model_path=Path("models/arnndn/std.rnnn"))
