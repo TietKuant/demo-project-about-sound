@@ -71,13 +71,14 @@ class StructureSmokeTests(unittest.TestCase):
         with self.assertRaisesRegex(FileNotFoundError, "arnndn model file not found"):
             engine.load()
 
-    def test_ffmpeg_wrapper_formats_windows_arnndn_model_path(self) -> None:
-        wrapper = FFmpegWrapper(arnndn_model_path=Path("models/arnndn/std.rnnn"))
+    def test_ffmpeg_wrapper_formats_resolved_arnndn_model_path(self) -> None:
+        model_path = Path("models/arnndn/std.rnnn")
+        wrapper = FFmpegWrapper(arnndn_model_path=model_path)
         filter_value = wrapper._build_arnndn_filter()
-        self.assertEqual(
-            filter_value,
-            "arnndn=m='C\\:/Users/ASUS/Desktop/New PJ/models/arnndn/std.rnnn'",
-        )
+        expected_model_path = model_path.resolve().as_posix().replace(":", "\\:")
+        self.assertTrue(filter_value.startswith("arnndn=m='"))
+        self.assertIn(expected_model_path, filter_value)
+        self.assertTrue(filter_value.endswith("'"))
 
     def test_audio_pipeline_writes_real_denoised_output_and_manifest(self) -> None:
         root = Path("tmp") / f"test-structure-audio-{uuid.uuid4().hex}"
