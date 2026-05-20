@@ -16,3 +16,7 @@ dist/
 
 # Test/runtime temp artifacts
 tmp/test-structure-*/
+
+# Manual/runtime pipeline outputs
+tmp/manual-runs/
+tmp/tmp/
