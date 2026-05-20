@@ -20,3 +20,6 @@ tmp/test-structure-*/
 # Manual/runtime pipeline outputs
 tmp/manual-runs/
 tmp/tmp/
+
+# Manual DeepFilterNet smoke test outputs
+tmp/deepfilter-test/
