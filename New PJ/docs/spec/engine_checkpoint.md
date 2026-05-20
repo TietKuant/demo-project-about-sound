@@ -64,3 +64,14 @@
   `tmp/manual-runs/indoor_fan.denoised.wav`
 - Unit/smoke tests after integration:
   `python -m pytest` -> 11 passed.
+
+## DeepFilterNet pipeline integration
+- Added `DeepFilterNetCliEngine`.
+- Engine name: `deepfilternet`.
+- Uses CLI command: `deepFilter`.
+- Pipeline manual test passed:
+  `python -m src.pipeline.run_pipeline samples/real_audio/indoor_fan.m4a --output-dir tmp/manual-runs --engine deepfilternet`
+- Output:
+  `tmp/manual-runs/indoor_fan.denoised.wav`
+- Unit/smoke tests after integration:
+  `python -m pytest` -> 11 passed.
