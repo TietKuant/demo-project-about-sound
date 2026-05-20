@@ -8,6 +8,7 @@ from pathlib import Path
 from src.api.contracts import DenoiseRequest, DenoiseResult
 from src.eval.checks import evaluate_output_artifact
 from src.engine.base import DenoiseEngine
+from src.engine.deepfilternet_cli_engine import DeepFilterNetCliEngine
 from src.engine.ffmpeg_arnndn_engine import FFmpegArnndnEngine
 from src.engine.noisereduce_engine import NoisereduceEngine
 from src.io.paths import (
@@ -32,6 +33,8 @@ def _build_engine(engine_name: str, ffmpeg_wrapper: FFmpegWrapper) -> DenoiseEng
         return FFmpegArnndnEngine(ffmpeg_wrapper=ffmpeg_wrapper)
     if engine_name == "noisereduce":
         return NoisereduceEngine()
+    if engine_name == "deepfilternet":
+        return DeepFilterNetCliEngine()
     raise ValueError(f"Unsupported denoise engine: {engine_name}")
 
 
@@ -130,7 +133,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--engine",
-        choices=("ffmpeg-arnndn", "noisereduce"),
+        choices=("ffmpeg-arnndn", "noisereduce", "deepfilternet"),
         default="ffmpeg-arnndn",
         help="Denoise engine to use.",
     )

@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.api.contracts import DenoiseRequest
+from src.engine.deepfilternet_cli_engine import DeepFilterNetCliEngine
 from src.engine.deepfilternet_engine import DeepFilterNetEngine
 from src.engine.ffmpeg_arnndn_engine import FFmpegArnndnEngine
 from src.io.paths import derive_output_mode, infer_input_type
@@ -43,6 +44,13 @@ class StructureSmokeTests(unittest.TestCase):
 
     @staticmethod
     def _mock_noisereduce_denoise(input_audio_path: str | Path, output_audio_path: str | Path) -> Path:
+        _ = Path(input_audio_path)
+        output_path = Path(output_audio_path)
+        StructureSmokeTests._write_sample_wav(output_path)
+        return output_path
+
+    @staticmethod
+    def _mock_deepfilternet_denoise(input_audio_path: str | Path, output_audio_path: str | Path) -> Path:
         _ = Path(input_audio_path)
         output_path = Path(output_audio_path)
         StructureSmokeTests._write_sample_wav(output_path)
@@ -87,6 +95,30 @@ class StructureSmokeTests(unittest.TestCase):
         self.assertTrue(filter_value.startswith("arnndn=m='"))
         self.assertIn(expected_model_path, filter_value)
         self.assertTrue(filter_value.endswith("'"))
+
+    def test_deepfilternet_cli_engine_copies_generated_output_to_explicit_path(self) -> None:
+        root = Path("tmp") / f"test-structure-deepfilter-engine-{uuid.uuid4().hex}"
+        input_path = root / "sample.prepared.wav"
+        output_path = root / "outputs" / "sample.denoised.wav"
+        generated_path = output_path.parent / "sample.prepared_DeepFilterNet3.wav"
+        self._write_sample_wav(input_path)
+
+        def mock_deepfilter_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            self.assertEqual(command[0], "/usr/local/bin/deepFilter")
+            self.assertEqual(command[1], str(input_path.resolve()))
+            self.assertEqual(command[2], "-o")
+            self.assertEqual(command[3], str(output_path.parent.resolve()))
+            self._write_sample_wav(generated_path)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        engine = DeepFilterNetCliEngine()
+        with patch("src.engine.deepfilternet_cli_engine.shutil.which", return_value="/usr/local/bin/deepFilter"):
+            engine.load()
+        with patch("src.engine.deepfilternet_cli_engine.subprocess.run", side_effect=mock_deepfilter_run):
+            result_path = engine.denoise(input_path, output_path)
+
+        self.assertEqual(result_path, output_path.resolve())
+        self.assertTrue(output_path.exists())
 
     def test_audio_pipeline_writes_real_denoised_output_and_manifest(self) -> None:
         root = Path("tmp") / f"test-structure-audio-{uuid.uuid4().hex}"
@@ -177,6 +209,37 @@ class StructureSmokeTests(unittest.TestCase):
         manifest_path = Path(result.run_summary["manifest_path"])
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(payload["selected_engine"], "noisereduce")
+        self.assertEqual(payload["stage_statuses"]["denoise"], "completed_real")
+
+    def test_pipeline_routes_to_deepfilternet_engine_when_requested(self) -> None:
+        root = Path("tmp") / f"test-structure-deepfilternet-{uuid.uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+        input_path = root / "sample.wav"
+        self._write_sample_wav(input_path)
+
+        request = DenoiseRequest(
+            input_path=input_path,
+            output_dir=root / "outputs",
+            output_mode="audio",
+            keep_intermediates=False,
+            engine_name="deepfilternet",
+        )
+        with patch("src.media.ffmpeg_wrapper.subprocess.run", side_effect=self._mock_ffmpeg_run):
+            with patch("src.pipeline.run_pipeline.DeepFilterNetCliEngine.load", return_value=None):
+                with patch(
+                    "src.pipeline.run_pipeline.DeepFilterNetCliEngine.denoise",
+                    side_effect=self._mock_deepfilternet_denoise,
+                ) as denoise_mock:
+                    result = run_pipeline(request)
+
+        self.assertEqual(result.engine_name, "deepfilternet")
+        self.assertEqual(result.final_output_path.name, "sample.denoised.wav")
+        self.assertTrue(result.final_output_path.exists())
+        denoise_mock.assert_called_once()
+
+        manifest_path = Path(result.run_summary["manifest_path"])
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["selected_engine"], "deepfilternet")
         self.assertEqual(payload["stage_statuses"]["denoise"], "completed_real")
 
 if __name__ == "__main__":
