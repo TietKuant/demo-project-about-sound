@@ -85,3 +85,24 @@ Initial conclusion:
 - `deepfilternet` is the strongest current engine for voice-cleaning on this sample.
 - `ffmpeg-arnndn` is usable as a fallback engine.
 - `noisereduce` is useful as a traditional baseline, but may introduce voice muffling artifacts.
+
+## Manual listening comparison: indoor_fan.m4a
+
+Input:
+- `samples/real_audio/indoor_fan.m4a`
+
+Compared outputs:
+- `tmp/compare-indoor-fan/arnndn/indoor_fan.denoised.wav`
+- `tmp/compare-indoor-fan/noisereduce/indoor_fan.denoised.wav`
+- `tmp/compare-indoor-fan/deepfilternet/indoor_fan.denoised.wav`
+
+Observation:
+- Original audio contains clear wind/fan noise, audible both during speech and silence.
+- `ffmpeg-arnndn` reduces some noise, but a light residual hiss/rumble remains during non-speech sections.
+- `noisereduce` reduces noise, but noticeably muffles/compresses the voice, making it sound partially blocked.
+- `deepfilternet` gives the best subjective result on this sample. The voice is clearer and more present, and the output sounds louder or more enhanced.
+
+Initial conclusion:
+- `deepfilternet` is currently the strongest engine for voice cleaning on this sample.
+- `ffmpeg-arnndn` is usable as a fallback.
+- `noisereduce` is useful as a traditional baseline, but may introduce voice-muffling artifacts.
