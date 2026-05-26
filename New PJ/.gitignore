@@ -23,3 +23,6 @@ tmp/tmp/
 
 # Manual DeepFilterNet smoke test outputs
 tmp/deepfilter-test/
+
+# Manual engine comparison outputs
+tmp/compare-*/
