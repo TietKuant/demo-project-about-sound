@@ -17,6 +17,10 @@ dist/
 # Test/runtime temp artifacts
 tmp/test-structure-*/
 
+# Local datasets
+data/raw/
+data/processed/
+
 # Manual/runtime pipeline outputs
 tmp/manual-runs/
 tmp/tmp/
