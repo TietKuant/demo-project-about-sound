@@ -30,3 +30,7 @@ tmp/deepfilter-test/
 
 # Manual engine comparison outputs
 tmp/compare-*/
+
+# Benchmark outputs
+outputs/benchmarks/
+outputs/reports/
