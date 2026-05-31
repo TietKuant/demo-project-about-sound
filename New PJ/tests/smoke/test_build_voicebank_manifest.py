@@ -36,6 +36,10 @@ class BuildVoiceBankManifestSmokeTests(unittest.TestCase):
         self.assertEqual(rows[0]["split"], "test")
         self.assertFalse(Path(rows[0]["noisy_path"]).is_absolute())
         self.assertFalse(Path(rows[0]["clean_path"]).is_absolute())
+        self.assertNotIn("\\", rows[0]["noisy_path"])
+        self.assertNotIn("\\", rows[0]["clean_path"])
+        self.assertIn("/voicebank/noisy_testset_wav/", rows[0]["noisy_path"])
+        self.assertIn("/voicebank/clean_testset_wav/", rows[0]["clean_path"])
 
     def test_train_split_manifest_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

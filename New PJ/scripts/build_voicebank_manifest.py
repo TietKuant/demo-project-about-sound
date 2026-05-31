@@ -15,7 +15,7 @@ SPLIT_FOLDERS = {
 
 
 def _readable_path(path: Path) -> str:
-    return os.path.relpath(path.resolve(), Path.cwd().resolve())
+    return Path(os.path.relpath(path.resolve(), Path.cwd().resolve())).as_posix()
 
 
 def build_voicebank_manifest(
