@@ -20,7 +20,7 @@ class GradioAppSmokeTests(unittest.TestCase):
             wav_file.setnchannels(1)
             wav_file.setsampwidth(2)
             wav_file.setframerate(16000)
-            wav_file.writeframes(b"\x00\x00" * 1600)
+            wav_file.writeframes(b"\x01\x00\xff\xff" * 800)
 
     def test_restore_fast_mode_routes_through_pipeline(self) -> None:
         captured_engine_names: list[str] = []
@@ -42,7 +42,7 @@ class GradioAppSmokeTests(unittest.TestCase):
             self._write_wav(input_path)
 
             with patch("app.gradio_app.run_pipeline", side_effect=mock_pipeline):
-                original, restored, original_preview, restored_preview, runtime_sec, duration_sec, rtf, error = restore_fast_mode(
+                original, restored, original_preview, restored_preview, plots, runtime_sec, duration_sec, rtf, error = restore_fast_mode(
                     input_path,
                     output_root=root / "outputs",
                 )
@@ -52,6 +52,7 @@ class GradioAppSmokeTests(unittest.TestCase):
         self.assertTrue(restored)
         self.assertEqual(original_preview, str(input_path.resolve()))
         self.assertEqual(restored_preview, restored)
+        self.assertEqual(len(plots), 4)
         self.assertTrue(runtime_sec)
         self.assertEqual(duration_sec, "0.100000")
         self.assertTrue(rtf)
@@ -64,7 +65,7 @@ class GradioAppSmokeTests(unittest.TestCase):
             self._write_wav(input_path)
 
             with patch("app.gradio_app.run_pipeline", side_effect=RuntimeError("engine failed")):
-                original, restored, original_preview, restored_preview, runtime_sec, duration_sec, rtf, error = restore_fast_mode(
+                original, restored, original_preview, restored_preview, plots, runtime_sec, duration_sec, rtf, error = restore_fast_mode(
                     input_path,
                     output_root=root / "outputs",
                 )
@@ -73,6 +74,7 @@ class GradioAppSmokeTests(unittest.TestCase):
         self.assertIsNone(restored)
         self.assertIsNone(original_preview)
         self.assertIsNone(restored_preview)
+        self.assertEqual(plots, [])
         self.assertTrue(runtime_sec)
         self.assertEqual(duration_sec, "")
         self.assertEqual(rtf, "")

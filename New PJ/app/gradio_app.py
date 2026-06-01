@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.api.contracts import DenoiseRequest
 from src.eval.metrics import load_mono_audio
+from src.eval.plots import generate_restoration_plots
 from src.io.paths import derive_output_mode, infer_input_type, validate_input_path
 from src.pipeline.run_pipeline import run_pipeline
 
@@ -42,10 +43,10 @@ def _audio_preview_path(path: Path) -> str | None:
 def restore_fast_mode(
     input_path: str | Path | None,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
-) -> tuple[str, str | None, str | None, str | None, str, str, str, str]:
+) -> tuple[str, str | None, str | None, str | None, list[str], str, str, str, str]:
     """Run Fast Mode through the pipeline and return UI-ready values."""
     if input_path is None:
-        return "", None, None, None, "", "", "", "Select an audio or video file."
+        return "", None, None, None, [], "", "", "", "Select an audio or video file."
 
     started_at = time.perf_counter()
     original_output = str(input_path)
@@ -68,19 +69,28 @@ def restore_fast_mode(
 
         duration_sec = _audio_duration_sec(original_path, result.intermediate_audio_path)
         rtf = None if duration_sec is None else runtime_sec / duration_sec
+        plot_paths: list[str] = []
+        warning = ""
+        if _audio_preview_path(original_path) and _audio_preview_path(result.final_output_path):
+            try:
+                plots = generate_restoration_plots(original_path, result.final_output_path, run_dir / "report")
+                plot_paths = [str(path) for path in plots.values()]
+            except Exception as exc:
+                warning = f"Plot generation failed: {exc}"
         return (
             str(original_path),
             str(result.final_output_path),
             _audio_preview_path(original_path),
             _audio_preview_path(result.final_output_path),
+            plot_paths,
             f"{runtime_sec:.6f}",
             "" if duration_sec is None else f"{duration_sec:.6f}",
             "" if rtf is None else f"{rtf:.6f}",
-            "",
+            warning,
         )
     except Exception as exc:
         runtime_sec = time.perf_counter() - started_at
-        return original_output, None, None, None, f"{runtime_sec:.6f}", "", "", str(exc)
+        return original_output, None, None, None, [], f"{runtime_sec:.6f}", "", "", str(exc)
 
 
 def create_app() -> object:
@@ -97,6 +107,7 @@ def create_app() -> object:
             with gr.Row():
                 original_preview = gr.Audio(label="Original audio preview")
                 restored_preview = gr.Audio(label="Restored audio preview")
+            plot_gallery = gr.Gallery(label="Waveform and spectrogram report", columns=2)
             with gr.Row():
                 runtime_output = gr.Textbox(label="Runtime (sec)", interactive=False)
                 duration_output = gr.Textbox(label="Audio duration (sec)", interactive=False)
@@ -111,6 +122,7 @@ def create_app() -> object:
                     restored_output,
                     original_preview,
                     restored_preview,
+                    plot_gallery,
                     runtime_output,
                     duration_output,
                     rtf_output,
