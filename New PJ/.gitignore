@@ -34,3 +34,8 @@ tmp/compare-*/
 # Benchmark outputs
 outputs/benchmarks/
 outputs/reports/
+
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+*$py.class
