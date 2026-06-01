@@ -39,3 +39,6 @@ outputs/reports/
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Manual compare workflow outputs
+outputs/compare-runs/
