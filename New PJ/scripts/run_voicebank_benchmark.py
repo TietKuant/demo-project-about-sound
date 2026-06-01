@@ -16,7 +16,7 @@ from src.io.paths import derive_output_mode, infer_input_type
 from src.pipeline.run_pipeline import run_pipeline
 
 
-DEFAULT_ENGINES = "ffmpeg-arnndn,noisereduce,deepfilternet"
+DEFAULT_ENGINES = "noisy_input,ffmpeg-arnndn,noisereduce,deepfilternet"
 FIELDNAMES = [
     "sample_id",
     "engine",
@@ -83,6 +83,21 @@ def run_voicebank_benchmark(
 
         for engine in engines:
             row = _empty_metric_row(pair.sample_id, engine, pair.noisy_path, pair.clean_path)
+            if engine == "noisy_input":
+                row.update(
+                    {
+                        "status": "success",
+                        "runtime_sec": "0.000000",
+                        "enhanced_path": str(pair.noisy_path),
+                        "snr_noisy_db": f"{snr_noisy_value:.6f}",
+                        "snr_enhanced_db": f"{snr_noisy_value:.6f}",
+                        "snr_improvement_db": "0.000000",
+                        "si_sdr_db": f"{compute_si_sdr_db(clean_audio, noisy_audio):.6f}",
+                    }
+                )
+                rows.append(row)
+                continue
+
             started_at = time.perf_counter()
             try:
                 result = run_pipeline(
