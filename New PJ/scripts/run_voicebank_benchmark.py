@@ -23,6 +23,8 @@ FIELDNAMES = [
     "status",
     "error",
     "runtime_sec",
+    "audio_duration_sec",
+    "rtf",
     "noisy_path",
     "clean_path",
     "enhanced_path",
@@ -47,6 +49,8 @@ def _empty_metric_row(sample_id: str, engine: str, noisy_path: Path, clean_path:
         "status": "failed",
         "error": "",
         "runtime_sec": "",
+        "audio_duration_sec": "",
+        "rtf": "",
         "noisy_path": str(noisy_path),
         "clean_path": str(clean_path),
         "enhanced_path": "",
@@ -77,7 +81,8 @@ def run_voicebank_benchmark(
     rows: list[dict[str, str]] = []
     for pair in pairs:
         clean_audio, _ = load_mono_audio(pair.clean_path)
-        noisy_audio, _ = load_mono_audio(pair.noisy_path)
+        noisy_audio, noisy_sample_rate = load_mono_audio(pair.noisy_path)
+        audio_duration_sec = len(noisy_audio) / noisy_sample_rate
         snr_noisy_value = compute_snr_db(clean_audio, noisy_audio)
         output_mode = derive_output_mode(infer_input_type(pair.noisy_path))
 
@@ -88,6 +93,8 @@ def run_voicebank_benchmark(
                     {
                         "status": "success",
                         "runtime_sec": "0.000000",
+                        "audio_duration_sec": f"{audio_duration_sec:.6f}",
+                        "rtf": "0.000000",
                         "enhanced_path": str(pair.noisy_path),
                         "snr_noisy_db": f"{snr_noisy_value:.6f}",
                         "snr_enhanced_db": f"{snr_noisy_value:.6f}",
@@ -118,6 +125,8 @@ def run_voicebank_benchmark(
                     {
                         "status": "success",
                         "runtime_sec": f"{runtime_sec:.6f}",
+                        "audio_duration_sec": f"{audio_duration_sec:.6f}",
+                        "rtf": f"{runtime_sec / audio_duration_sec:.6f}",
                         "enhanced_path": str(result.final_output_path),
                         "snr_noisy_db": f"{snr_noisy_value:.6f}",
                         "snr_enhanced_db": f"{snr_enhanced_value:.6f}",
@@ -126,7 +135,10 @@ def run_voicebank_benchmark(
                     }
                 )
             except Exception as exc:
-                row["runtime_sec"] = f"{time.perf_counter() - started_at:.6f}"
+                runtime_sec = time.perf_counter() - started_at
+                row["runtime_sec"] = f"{runtime_sec:.6f}"
+                row["audio_duration_sec"] = f"{audio_duration_sec:.6f}"
+                row["rtf"] = f"{runtime_sec / audio_duration_sec:.6f}"
                 row["error"] = str(exc)
             rows.append(row)
 

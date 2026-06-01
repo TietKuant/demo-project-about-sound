@@ -73,6 +73,8 @@ class RunVoiceBankBenchmarkSmokeTests(unittest.TestCase):
         self.assertEqual(rows[0]["engine"], "ffmpeg-arnndn")
         self.assertEqual(rows[0]["status"], "success")
         self.assertTrue(rows[0]["enhanced_path"])
+        self.assertTrue(rows[0]["audio_duration_sec"])
+        self.assertTrue(rows[0]["rtf"])
         self.assertTrue(rows[0]["snr_noisy_db"])
         self.assertTrue(rows[0]["si_sdr_db"])
 
@@ -107,6 +109,8 @@ class RunVoiceBankBenchmarkSmokeTests(unittest.TestCase):
         self.assertEqual(rows[0]["engine"], "noisy_input")
         self.assertEqual(rows[0]["status"], "success")
         self.assertEqual(rows[0]["runtime_sec"], "0.000000")
+        self.assertTrue(rows[0]["audio_duration_sec"])
+        self.assertEqual(rows[0]["rtf"], "0.000000")
         self.assertEqual(rows[0]["enhanced_path"], rows[0]["noisy_path"])
         self.assertEqual(rows[0]["snr_enhanced_db"], rows[0]["snr_noisy_db"])
         self.assertEqual(rows[0]["snr_improvement_db"], "0.000000")
@@ -144,6 +148,8 @@ class RunVoiceBankBenchmarkSmokeTests(unittest.TestCase):
         self.assertEqual(calls, ["ffmpeg-arnndn", "noisereduce", "deepfilternet"])
         self.assertEqual([row["status"] for row in rows], ["success", "success", "failed", "success"])
         self.assertIn("engine failed", rows[2]["error"])
+        self.assertTrue(rows[2]["runtime_sec"])
+        self.assertTrue(rows[2]["rtf"])
 
     def test_limit_restricts_number_of_pairs(self) -> None:
         calls: list[str] = []
