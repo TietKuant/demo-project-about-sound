@@ -42,7 +42,7 @@ class GradioAppSmokeTests(unittest.TestCase):
             self._write_wav(input_path)
 
             with patch("app.gradio_app.run_pipeline", side_effect=mock_pipeline):
-                original, restored, runtime_sec, duration_sec, rtf, error = restore_fast_mode(
+                original, restored, original_preview, restored_preview, runtime_sec, duration_sec, rtf, error = restore_fast_mode(
                     input_path,
                     output_root=root / "outputs",
                 )
@@ -50,6 +50,8 @@ class GradioAppSmokeTests(unittest.TestCase):
         self.assertEqual(captured_engine_names, ["deepfilternet"])
         self.assertEqual(original, str(input_path.resolve()))
         self.assertTrue(restored)
+        self.assertEqual(original_preview, str(input_path.resolve()))
+        self.assertEqual(restored_preview, restored)
         self.assertTrue(runtime_sec)
         self.assertEqual(duration_sec, "0.100000")
         self.assertTrue(rtf)
@@ -62,13 +64,15 @@ class GradioAppSmokeTests(unittest.TestCase):
             self._write_wav(input_path)
 
             with patch("app.gradio_app.run_pipeline", side_effect=RuntimeError("engine failed")):
-                original, restored, runtime_sec, duration_sec, rtf, error = restore_fast_mode(
+                original, restored, original_preview, restored_preview, runtime_sec, duration_sec, rtf, error = restore_fast_mode(
                     input_path,
                     output_root=root / "outputs",
                 )
 
         self.assertEqual(original, str(input_path.resolve()))
         self.assertIsNone(restored)
+        self.assertIsNone(original_preview)
+        self.assertIsNone(restored_preview)
         self.assertTrue(runtime_sec)
         self.assertEqual(duration_sec, "")
         self.assertEqual(rtf, "")

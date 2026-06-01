@@ -32,10 +32,20 @@ def _audio_duration_sec(*paths: Path | None) -> float | None:
     return None
 
 
-def restore_fast_mode(input_path: str | Path | None, output_root: Path = DEFAULT_OUTPUT_ROOT) -> tuple[str, str | None, str, str, str, str]:
+def _audio_preview_path(path: Path) -> str | None:
+    try:
+        return str(path) if infer_input_type(path) == "audio" else None
+    except ValueError:
+        return None
+
+
+def restore_fast_mode(
+    input_path: str | Path | None,
+    output_root: Path = DEFAULT_OUTPUT_ROOT,
+) -> tuple[str, str | None, str | None, str | None, str, str, str, str]:
     """Run Fast Mode through the pipeline and return UI-ready values."""
     if input_path is None:
-        return "", None, "", "", "", "Select an audio or video file."
+        return "", None, None, None, "", "", "", "Select an audio or video file."
 
     started_at = time.perf_counter()
     original_output = str(input_path)
@@ -61,6 +71,8 @@ def restore_fast_mode(input_path: str | Path | None, output_root: Path = DEFAULT
         return (
             str(original_path),
             str(result.final_output_path),
+            _audio_preview_path(original_path),
+            _audio_preview_path(result.final_output_path),
             f"{runtime_sec:.6f}",
             "" if duration_sec is None else f"{duration_sec:.6f}",
             "" if rtf is None else f"{rtf:.6f}",
@@ -68,7 +80,7 @@ def restore_fast_mode(input_path: str | Path | None, output_root: Path = DEFAULT
         )
     except Exception as exc:
         runtime_sec = time.perf_counter() - started_at
-        return original_output, None, f"{runtime_sec:.6f}", "", "", str(exc)
+        return original_output, None, None, None, f"{runtime_sec:.6f}", "", "", str(exc)
 
 
 def create_app() -> object:
@@ -83,6 +95,9 @@ def create_app() -> object:
                 original_output = gr.File(label="Original")
                 restored_output = gr.File(label="Restored output")
             with gr.Row():
+                original_preview = gr.Audio(label="Original audio preview")
+                restored_preview = gr.Audio(label="Restored audio preview")
+            with gr.Row():
                 runtime_output = gr.Textbox(label="Runtime (sec)", interactive=False)
                 duration_output = gr.Textbox(label="Audio duration (sec)", interactive=False)
                 rtf_output = gr.Textbox(label="RTF", interactive=False)
@@ -94,6 +109,8 @@ def create_app() -> object:
                 outputs=[
                     original_output,
                     restored_output,
+                    original_preview,
+                    restored_preview,
                     runtime_output,
                     duration_output,
                     rtf_output,
