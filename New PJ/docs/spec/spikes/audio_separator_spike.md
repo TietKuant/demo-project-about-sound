@@ -92,3 +92,30 @@ If the selected model uses different output names, record the actual paths and m
 - Do not add UI.
 - Do not download models during preflight.
 - If installation or the first bounded run fails, record the error and stop.
+
+## Install Attempt 1 Result
+
+- Command:
+  `.venv-audio-separator/bin/pip install 'audio-separator[cpu]'`
+
+- Result:
+  Failed.
+
+- Observed behavior:
+  Pip backtracked across many `audio-separator` versions and eventually attempted to install `audio_separator-0.24.1`.
+  The dependency chain pulled `numba`, which pulled `llvmlite`.
+  `llvmlite` attempted to build from source and failed.
+
+- Direct failure:
+  `llvmlite needs CMake tools to build. It appears that the 'cmake' tool is either not installed or not found on the path.`
+
+- Post-install check:
+  `import audio_separator` failed with `ModuleNotFoundError`.
+  `.venv-audio-separator/bin/audio-separator` was not created.
+
+- Decision:
+  Stop this install path. Do not install CMake/LLVM blindly.
+  Treat `audio-separator[cpu]` as failed on this local Python 3.11 macOS isolated environment until a cleaner install path is found.
+
+- Next candidate:
+  Try direct `demucs` CLI in a separate isolated environment, because the MVP needs a music/vocal separation engine and the source-of-truth already allows Demucs / HTDemucs as fallback if `python-audio-separator` fails.
