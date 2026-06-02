@@ -108,3 +108,40 @@ Record actual output names before any integration work.
   Do not install into `.venv/`.
   Do not edit `pyproject.toml`.
   Do not integrate into the app during installation.
+
+## Install Attempt 1 Result
+
+- Command:
+  `.venv-demucs/bin/pip install demucs`
+
+- Result:
+  Passed.
+
+- Installed package:
+  `demucs-4.0.1`
+
+- Major installed dependencies observed:
+  - `torch-2.2.2`
+  - `torchaudio-2.2.2`
+  - `openunmix-1.3.0`
+  - `dora-search-0.1.12`
+  - `numpy-2.4.6`
+
+- Import check:
+  `import demucs` passed.
+
+- CLI help check:
+  `.venv-demucs/bin/python -m demucs --help` printed the expected CLI help, including output directory, device, segment, jobs, and `--two-stems`.
+
+- Important warning:
+  The CLI help command emitted a NumPy/PyTorch compatibility warning:
+  `A module that was compiled using NumPy 1.x cannot be run in NumPy 2.4.6`
+  and PyTorch reported `Failed to initialize NumPy: _ARRAY_API not found`.
+
+- Decision:
+  Treat installation as a partial pass.
+  Do not run a model yet.
+  Pin NumPy to `<2` inside `.venv-demucs/` before the first bounded separation run.
+  Do not modify the main `.venv/`.
+  Do not edit `pyproject.toml`.
+  Do not integrate into the app.
