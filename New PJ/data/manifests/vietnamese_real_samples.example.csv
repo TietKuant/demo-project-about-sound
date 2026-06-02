@@ -1,0 +1,7 @@
+sample_id,category,input_path,input_type,language,expected_task,has_clean_reference,notes
+vi_quiet_001,vietnamese_speech_quiet,data/private/vietnamese-real/vietnamese_speech_quiet/vi_quiet_001.wav,audio,vi,clean_voice,false,Example quiet indoor Vietnamese speech
+vi_fan_001,vietnamese_speech_fan,data/private/vietnamese-real/vietnamese_speech_fan/vi_fan_001.m4a,audio,vi,clean_voice,false,Example Vietnamese speech with fan noise
+vi_traffic_001,vietnamese_speech_traffic,data/private/vietnamese-real/vietnamese_speech_traffic/vi_traffic_001.mp3,audio,vi,clean_voice,false,Example Vietnamese speech near traffic
+vi_cafe_001,vietnamese_speech_cafe,data/private/vietnamese-real/vietnamese_speech_cafe/vi_cafe_001.flac,audio,vi,clean_voice,false,Example Vietnamese speech in cafe noise
+vi_phone_video_001,vietnamese_phone_video,data/private/vietnamese-real/vietnamese_phone_video/vi_phone_video_001.mp4,video,vi,clean_voice,false,Example phone video with Vietnamese speech
+vi_music_video_001,vietnamese_music_or_music_video_optional,data/private/vietnamese-real/vietnamese_music_or_music_video_optional/vi_music_video_001.mov,video,vi,extract_vocals,false,Example legal music video for optional separation validation

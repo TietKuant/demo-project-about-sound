@@ -54,6 +54,7 @@ outputs/ui-runs/
 
 # External datasets
 data/external/
+data/private/
 
 # Spike outputs
 outputs/spikes/
