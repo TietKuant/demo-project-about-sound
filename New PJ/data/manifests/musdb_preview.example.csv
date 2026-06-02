@@ -1,0 +1,4 @@
+track_id,split,input_path,dataset,source
+Al James - Schoolboy Facination,test,data/external/musdb18-preview/test/Al James - Schoolboy Facination.stem.mp4,MUSDB18-7-STEMS,sigsep-mus-db release preview
+AM Contra - Heart Peripheral,test,data/external/musdb18-preview/test/AM Contra - Heart Peripheral.stem.mp4,MUSDB18-7-STEMS,sigsep-mus-db release preview
+Angels In Amplifiers - I'm Alright,test,data/external/musdb18-preview/test/Angels In Amplifiers - I'm Alright.stem.mp4,MUSDB18-7-STEMS,sigsep-mus-db release preview
