@@ -145,3 +145,24 @@ Record actual output names before any integration work.
   Do not modify the main `.venv/`.
   Do not edit `pyproject.toml`.
   Do not integrate into the app.
+
+## NumPy Compatibility Fix Result
+
+- Command:
+  `.venv-demucs/bin/pip install 'numpy<2'`
+
+- Result:
+  Passed.
+
+- Change:
+  `numpy-2.4.6` was replaced with `numpy-1.26.4`.
+
+- Verification:
+  `import numpy`, `import torch`, and `import demucs` passed.
+  `.venv-demucs/bin/python -m demucs --help` printed the expected CLI help without the previous NumPy `_ARRAY_API` warning.
+
+- Decision:
+  The Demucs isolated environment is now ready for one bounded separation run.
+  Do not integrate into the app yet.
+  Do not change the main `.venv/`.
+  Do not edit `pyproject.toml`.
