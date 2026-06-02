@@ -223,3 +223,30 @@ Record actual output names before any integration work.
   Before app integration, run one legal real music sample or MUSDB sample to validate task suitability.
   Do not commit generated output files.
   Do not commit the synthetic smoke sample unless the project explicitly decides to keep generated smoke fixtures.
+
+## Bounded Run Attempt 3 Result — MUSDB18 Preview
+
+- Input:
+  `data/external/musdb18-preview/test/Cristina Vane - So Easy.stem.mp4`
+
+- Input source:
+  MUSDB18 7-second preview dataset downloaded from the official `sigsep-mus-db` release.
+
+- Command:
+  `.venv-demucs/bin/python -m demucs --two-stems vocals --device cpu -j 1 -o outputs/spikes/demucs-musdb-preview "data/external/musdb18-preview/test/Cristina Vane - So Easy.stem.mp4"`
+
+- Result:
+  Passed.
+
+- Runtime:
+  Approximately `18.676` seconds wall-clock.
+
+- Output artifacts:
+  - `outputs/spikes/demucs-musdb-preview/htdemucs/Cristina Vane - So Easy.stem/vocals.wav`
+  - `outputs/spikes/demucs-musdb-preview/htdemucs/Cristina Vane - So Easy.stem/no_vocals.wav`
+
+- Decision:
+  Demucs passes the domain-valid MUSDB18 preview separation smoke test.
+  Demucs is accepted as the fallback music/vocal separation engine candidate for the MVP.
+  Next implementation phase should design `EngineResult` / `OutputArtifact` V2 before app integration.
+  Do not commit generated output files or external dataset files.

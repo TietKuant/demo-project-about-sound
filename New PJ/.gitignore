@@ -51,3 +51,9 @@ outputs/ui-runs/
 
 # Isolated spike environments
 .venv-demucs/
+
+# External datasets
+data/external/
+
+# Spike outputs
+outputs/spikes/
