@@ -45,3 +45,6 @@ outputs/compare-runs/
 
 # UI runtime outputs
 outputs/ui-runs/
+
+# Isolated spike environments
+.venv-audio-separator/
