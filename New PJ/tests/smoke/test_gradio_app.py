@@ -80,6 +80,61 @@ class GradioAppSmokeTests(unittest.TestCase):
         self.assertEqual(rtf, "")
         self.assertIn("engine failed", error)
 
+    def test_restore_fast_mode_prefers_intermediate_audio_for_before_plot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_path = root / "sample.m4a"
+            input_path.write_bytes(b"placeholder-audio-input")
+            intermediate_path = root / "sample.prepared.wav"
+            restored_path = root / "sample.denoised.wav"
+            self._write_wav(intermediate_path)
+            self._write_wav(restored_path)
+            result = DenoiseResult(
+                status="completed_real",
+                final_output_path=restored_path,
+                intermediate_audio_path=intermediate_path,
+                engine_name="deepfilternet",
+            )
+
+            with patch("app.gradio_app.run_pipeline", return_value=result):
+                with patch("app.gradio_app.generate_restoration_plots", return_value={}) as plots_mock:
+                    restore_fast_mode(input_path, output_root=root / "outputs")
+
+        plots_mock.assert_called_once()
+        self.assertEqual(plots_mock.call_args.args[0], intermediate_path)
+        self.assertEqual(plots_mock.call_args.args[1], restored_path)
+
+    def test_restore_fast_mode_skips_plots_for_video_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_path = root / "sample.mp4"
+            input_path.write_bytes(b"placeholder-video-input")
+            intermediate_path = root / "sample.prepared.wav"
+            restored_path = root / "sample.denoised.mp4"
+            self._write_wav(intermediate_path)
+            restored_path.write_bytes(b"placeholder-video-output")
+            result = DenoiseResult(
+                status="completed_real",
+                final_output_path=restored_path,
+                intermediate_audio_path=intermediate_path,
+                engine_name="deepfilternet",
+            )
+
+            with patch("app.gradio_app.run_pipeline", return_value=result):
+                with patch("app.gradio_app.generate_restoration_plots") as plots_mock:
+                    _, restored, original_preview, restored_preview, plots, _, duration_sec, rtf, warning = (
+                        restore_fast_mode(input_path, output_root=root / "outputs")
+                    )
+
+        plots_mock.assert_not_called()
+        self.assertEqual(restored, str(restored_path))
+        self.assertIsNone(original_preview)
+        self.assertIsNone(restored_preview)
+        self.assertEqual(plots, [])
+        self.assertEqual(duration_sec, "0.100000")
+        self.assertTrue(rtf)
+        self.assertIn("Plot generation skipped", warning)
+
 
 if __name__ == "__main__":
     unittest.main()

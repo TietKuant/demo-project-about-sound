@@ -71,17 +71,26 @@ def restore_fast_mode(
         rtf = None if duration_sec is None else runtime_sec / duration_sec
         plot_paths: list[str] = []
         warning = ""
-        if _audio_preview_path(original_path) and _audio_preview_path(result.final_output_path):
+        original_preview = _audio_preview_path(original_path)
+        restored_preview = _audio_preview_path(result.final_output_path)
+        before_plot_path = (
+            result.intermediate_audio_path
+            if result.intermediate_audio_path is not None and result.intermediate_audio_path.exists()
+            else original_path
+        )
+        if restored_preview is not None:
             try:
-                plots = generate_restoration_plots(original_path, result.final_output_path, run_dir / "report")
+                plots = generate_restoration_plots(before_plot_path, result.final_output_path, run_dir / "report")
                 plot_paths = [str(path) for path in plots.values()]
             except Exception as exc:
                 warning = f"Plot generation failed: {exc}"
+        else:
+            warning = "Plot generation skipped: restored output is not an audio file."
         return (
             str(original_path),
             str(result.final_output_path),
-            _audio_preview_path(original_path),
-            _audio_preview_path(result.final_output_path),
+            original_preview,
+            restored_preview,
             plot_paths,
             f"{runtime_sec:.6f}",
             "" if duration_sec is None else f"{duration_sec:.6f}",
