@@ -74,3 +74,37 @@ Record actual output names before any integration work.
 - Stop if installation requires uncontrolled dependency changes.
 - Stop if model download is unexpectedly huge.
 - Stop if the first bounded run fails, and record the error.
+
+## Install Dry-Run Result
+
+- Command:
+  `.venv-demucs/bin/pip install --dry-run demucs`
+
+- Result:
+  Passed.
+
+- Observed package version:
+  `demucs-4.0.1`
+
+- Available versions observed:
+  `4.0.1`, `4.0.0`, `3.0.6`, `3.0.5`, `3.0.4`, `3.0.3`, `3.0.2`, `3.0.1`, `3.0.0`, `2.0.3`, `2.0.2`, `2.0.1`, `2.0.0`, `0.0.2`, `0.0.1`
+
+- Planned major dependencies:
+  - `torch-2.2.2`
+  - `torchaudio-2.2.2`
+  - `openunmix-1.3.0`
+  - `dora_search-0.1.12`
+  - `julius-0.2.7`
+  - `lameenc-1.8.2`
+  - `einops-0.8.2`
+  - `numpy-2.4.6`
+
+- Risk assessment:
+  The dry-run did not show the `llvmlite` / CMake build failure seen in the `audio-separator[cpu]` spike.
+  The main expected risk is PyTorch/Torchaudio install size and first-run pretrained model download.
+
+- Decision:
+  Demucs is acceptable to attempt installation in `.venv-demucs/`.
+  Do not install into `.venv/`.
+  Do not edit `pyproject.toml`.
+  Do not integrate into the app during installation.
