@@ -16,6 +16,7 @@ from src.eval.metrics import load_mono_audio
 from src.eval.plots import generate_restoration_plots
 from src.io.paths import derive_output_mode, infer_input_type, validate_input_path
 from src.pipeline.run_pipeline import run_pipeline
+from src.reporting.report_writer import write_restore_report
 
 
 DEFAULT_OUTPUT_ROOT = Path("outputs/ui-runs")
@@ -43,10 +44,10 @@ def _audio_preview_path(path: Path) -> str | None:
 def restore_fast_mode(
     input_path: str | Path | None,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
-) -> tuple[str, str | None, str | None, str | None, list[str], str, str, str, str]:
+) -> tuple[str, str | None, str | None, str | None, list[str], str | None, str | None, str, str, str, str]:
     """Run Fast Mode through the pipeline and return UI-ready values."""
     if input_path is None:
-        return "", None, None, None, [], "", "", "", "Select an audio or video file."
+        return "", None, None, None, [], None, None, "", "", "", "Select an audio or video file."
 
     started_at = time.perf_counter()
     original_output = str(input_path)
@@ -86,12 +87,32 @@ def restore_fast_mode(
                 warning = f"Plot generation failed: {exc}"
         else:
             warning = "Plot generation skipped: restored output is not an audio file."
+        report_json_path: str | None = None
+        report_markdown_path: str | None = None
+        try:
+            report_paths = write_restore_report(
+                report_dir=run_dir / "report",
+                input_path=original_path,
+                output_path=result.final_output_path,
+                engine_name=result.engine_name,
+                runtime_sec=runtime_sec,
+                audio_duration_sec=duration_sec,
+                rtf=rtf,
+                plot_paths=plot_paths,
+                warning=warning,
+            )
+            report_json_path, report_markdown_path = (str(path) for path in report_paths)
+        except Exception as exc:
+            report_warning = f"Report writing failed: {exc}"
+            warning = f"{warning} {report_warning}".strip()
         return (
             str(original_path),
             str(result.final_output_path),
             original_preview,
             restored_preview,
             plot_paths,
+            report_json_path,
+            report_markdown_path,
             f"{runtime_sec:.6f}",
             "" if duration_sec is None else f"{duration_sec:.6f}",
             "" if rtf is None else f"{rtf:.6f}",
@@ -99,7 +120,7 @@ def restore_fast_mode(
         )
     except Exception as exc:
         runtime_sec = time.perf_counter() - started_at
-        return original_output, None, None, None, [], f"{runtime_sec:.6f}", "", "", str(exc)
+        return original_output, None, None, None, [], None, None, f"{runtime_sec:.6f}", "", "", str(exc)
 
 
 def create_app() -> object:
@@ -118,6 +139,9 @@ def create_app() -> object:
                 restored_preview = gr.Audio(label="Restored audio preview")
             plot_gallery = gr.Gallery(label="Waveform and spectrogram report", columns=2)
             with gr.Row():
+                report_json_output = gr.File(label="Report JSON")
+                report_markdown_output = gr.File(label="Report Markdown")
+            with gr.Row():
                 runtime_output = gr.Textbox(label="Runtime (sec)", interactive=False)
                 duration_output = gr.Textbox(label="Audio duration (sec)", interactive=False)
                 rtf_output = gr.Textbox(label="RTF", interactive=False)
@@ -132,6 +156,8 @@ def create_app() -> object:
                     original_preview,
                     restored_preview,
                     plot_gallery,
+                    report_json_output,
+                    report_markdown_output,
                     runtime_output,
                     duration_output,
                     rtf_output,

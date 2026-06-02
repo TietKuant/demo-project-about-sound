@@ -42,7 +42,7 @@ class GradioAppSmokeTests(unittest.TestCase):
             self._write_wav(input_path)
 
             with patch("app.gradio_app.run_pipeline", side_effect=mock_pipeline):
-                original, restored, original_preview, restored_preview, plots, runtime_sec, duration_sec, rtf, error = restore_fast_mode(
+                original, restored, original_preview, restored_preview, plots, report_json, report_markdown, runtime_sec, duration_sec, rtf, error = restore_fast_mode(
                     input_path,
                     output_root=root / "outputs",
                 )
@@ -53,6 +53,8 @@ class GradioAppSmokeTests(unittest.TestCase):
         self.assertEqual(original_preview, str(input_path.resolve()))
         self.assertEqual(restored_preview, restored)
         self.assertEqual(len(plots), 4)
+        self.assertTrue(report_json)
+        self.assertTrue(report_markdown)
         self.assertTrue(runtime_sec)
         self.assertEqual(duration_sec, "0.100000")
         self.assertTrue(rtf)
@@ -65,7 +67,7 @@ class GradioAppSmokeTests(unittest.TestCase):
             self._write_wav(input_path)
 
             with patch("app.gradio_app.run_pipeline", side_effect=RuntimeError("engine failed")):
-                original, restored, original_preview, restored_preview, plots, runtime_sec, duration_sec, rtf, error = restore_fast_mode(
+                original, restored, original_preview, restored_preview, plots, report_json, report_markdown, runtime_sec, duration_sec, rtf, error = restore_fast_mode(
                     input_path,
                     output_root=root / "outputs",
                 )
@@ -75,6 +77,8 @@ class GradioAppSmokeTests(unittest.TestCase):
         self.assertIsNone(original_preview)
         self.assertIsNone(restored_preview)
         self.assertEqual(plots, [])
+        self.assertIsNone(report_json)
+        self.assertIsNone(report_markdown)
         self.assertTrue(runtime_sec)
         self.assertEqual(duration_sec, "")
         self.assertEqual(rtf, "")
@@ -122,7 +126,7 @@ class GradioAppSmokeTests(unittest.TestCase):
 
             with patch("app.gradio_app.run_pipeline", return_value=result):
                 with patch("app.gradio_app.generate_restoration_plots") as plots_mock:
-                    _, restored, original_preview, restored_preview, plots, _, duration_sec, rtf, warning = (
+                    _, restored, original_preview, restored_preview, plots, report_json, report_markdown, _, duration_sec, rtf, warning = (
                         restore_fast_mode(input_path, output_root=root / "outputs")
                     )
 
@@ -131,9 +135,38 @@ class GradioAppSmokeTests(unittest.TestCase):
         self.assertIsNone(original_preview)
         self.assertIsNone(restored_preview)
         self.assertEqual(plots, [])
+        self.assertTrue(report_json)
+        self.assertTrue(report_markdown)
         self.assertEqual(duration_sec, "0.100000")
         self.assertTrue(rtf)
         self.assertIn("Plot generation skipped", warning)
+
+    def test_restore_fast_mode_keeps_success_when_report_writing_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_path = root / "sample.wav"
+            restored_path = root / "sample.denoised.wav"
+            self._write_wav(input_path)
+            self._write_wav(restored_path)
+            result = DenoiseResult(
+                status="completed_real",
+                final_output_path=restored_path,
+                intermediate_audio_path=None,
+                engine_name="deepfilternet",
+            )
+
+            with patch("app.gradio_app.run_pipeline", return_value=result):
+                with patch("app.gradio_app.generate_restoration_plots", return_value={}):
+                    with patch("app.gradio_app.write_restore_report", side_effect=RuntimeError("disk failed")):
+                        _, restored, _, _, _, report_json, report_markdown, _, _, _, warning = restore_fast_mode(
+                            input_path,
+                            output_root=root / "outputs",
+                        )
+
+        self.assertEqual(restored, str(restored_path))
+        self.assertIsNone(report_json)
+        self.assertIsNone(report_markdown)
+        self.assertIn("Report writing failed: disk failed", warning)
 
 
 if __name__ == "__main__":
