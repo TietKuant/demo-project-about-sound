@@ -195,3 +195,31 @@ Record actual output names before any integration work.
   Prepare a short legal music sample before the next bounded run.
   The next Demucs test input should be a 10-30 second music clip, preferably stereo WAV, with vocals/instrumental content.
   If no legal music sample is available, generate a simple synthetic music-like smoke sample only to test artifact generation, not separation quality.
+
+## Bounded Run Attempt 2 Result
+
+- Input:
+  `samples/input_audio/music_smoke.wav`
+
+- Input note:
+  This is a synthetic stereo smoke sample. It is suitable for validating Demucs execution and output artifact generation only. It is not suitable for separation-quality evaluation.
+
+- Command:
+  `.venv-demucs/bin/python -m demucs --two-stems vocals --device cpu -j 1 -o outputs/spikes/demucs-smoke samples/input_audio/music_smoke.wav`
+
+- Result:
+  Passed.
+
+- Runtime:
+  Approximately `19.630` seconds wall-clock.
+
+- Output artifacts:
+  - `outputs/spikes/demucs-smoke/htdemucs/music_smoke/vocals.wav`
+  - `outputs/spikes/demucs-smoke/htdemucs/music_smoke/no_vocals.wav`
+
+- Decision:
+  Demucs passes the local artifact-generation smoke test.
+  It is acceptable as the fallback music/vocal separation engine candidate.
+  Before app integration, run one legal real music sample or MUSDB sample to validate task suitability.
+  Do not commit generated output files.
+  Do not commit the synthetic smoke sample unless the project explicitly decides to keep generated smoke fixtures.
