@@ -166,3 +166,32 @@ Record actual output names before any integration work.
   Do not integrate into the app yet.
   Do not change the main `.venv/`.
   Do not edit `pyproject.toml`.
+
+## Bounded Run Attempt 1 Result
+
+- Command 1:
+  `.venv-demucs/bin/python -m demucs --two-stems vocals --device cpu -j 1 --segment 7 -o outputs/spikes/demucs-smoke samples/input_audio/demo_real.wav`
+
+- Command 2:
+  `.venv-demucs/bin/python -m demucs --two-stems vocals --device cpu -j 1 -o outputs/spikes/demucs-smoke samples/input_audio/demo_real.wav`
+
+- Result:
+  Failed.
+
+- Model download:
+  The default `htdemucs` model downloaded successfully to the local torch cache.
+  Observed download size: `80.2M`.
+
+- Direct failure:
+  Both runs failed inside Demucs `htdemucs.py` / `hdemucs.py` with `AssertionError` during `pad1d(...)`.
+
+- Interpretation:
+  This does not invalidate Demucs installation.
+  Demucs installed, imported, printed CLI help, downloaded the pretrained model, and reached model inference.
+  The current test input `samples/input_audio/demo_real.wav` is not a valid music-separation quality test input and appears unsuitable for this bounded run.
+
+- Decision:
+  Stop using `samples/input_audio/demo_real.wav` for Demucs execution tests.
+  Prepare a short legal music sample before the next bounded run.
+  The next Demucs test input should be a 10-30 second music clip, preferably stereo WAV, with vocals/instrumental content.
+  If no legal music sample is available, generate a simple synthetic music-like smoke sample only to test artifact generation, not separation quality.
