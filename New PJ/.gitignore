@@ -48,3 +48,6 @@ outputs/ui-runs/
 
 # Isolated spike environments
 .venv-audio-separator/
+
+# Isolated spike environments
+.venv-demucs/
