@@ -61,3 +61,6 @@ data/private/
 
 # Spike outputs
 outputs/spikes/
+
+# Local generated manifests
+data/manifests/*.local.csv
