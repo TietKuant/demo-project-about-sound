@@ -7,8 +7,9 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.run_music_separation import main, run_music_separation
+from scripts.run_music_separation import build_arg_parser, main, run_music_separation
 from src.api.contracts import OutputArtifact, ProcessingResult
+from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, REMOVE_VOCALS
 
 
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:
@@ -53,6 +54,8 @@ def test_music_separation_writes_success_summaries(tmp_path: Path) -> None:
     assert csv_rows[0]["engine"] == "demucs"
     assert csv_rows[0]["status"] == "success"
     assert csv_rows[0]["runtime_sec"] == "2.500000"
+    assert csv_rows[0]["primary_output_label"] == "vocals"
+    assert csv_rows[0]["primary_output_path"].endswith("/vocals.wav")
     assert csv_rows[0]["vocals_path"].endswith("/vocals.wav")
     assert csv_rows[0]["no_vocals_path"].endswith("/no_vocals.wav")
     assert csv_rows[0]["error"] == ""
@@ -77,9 +80,55 @@ def test_music_separation_writes_failed_summary(tmp_path: Path) -> None:
     row = _read_csv_rows(run_dir / "summary.csv")[0]
     assert row["status"] == "failed"
     assert row["runtime_sec"] == "0.250000"
+    assert row["primary_output_label"] == ""
+    assert row["primary_output_path"] == ""
     assert row["vocals_path"] == ""
     assert row["no_vocals_path"] == ""
     assert row["error"] == "demucs failed"
+
+
+def test_music_separation_remove_vocals_uses_no_vocals_as_primary_output(tmp_path: Path) -> None:
+    input_path = tmp_path / "Song.stem.mp4"
+    output_root = tmp_path / "runs"
+    input_path.write_bytes(b"music")
+
+    def mock_separate(source: Path, run_dir: Path) -> ProcessingResult:
+        vocals_path = run_dir / "htdemucs" / source.stem / "vocals.wav"
+        no_vocals_path = run_dir / "htdemucs" / source.stem / "no_vocals.wav"
+        return _success_result(vocals_path, no_vocals_path)
+
+    with patch("scripts.run_music_separation.DemucsCliEngine.separate", side_effect=mock_separate):
+        run_dir = run_music_separation(
+            input_path=input_path,
+            output_root=output_root,
+            task_name=REMOVE_VOCALS,
+        )
+
+    row = _read_csv_rows(run_dir / "summary.csv")[0]
+    assert row["task"] == REMOVE_VOCALS
+    assert row["primary_output_label"] == "no_vocals"
+    assert row["primary_output_path"].endswith("/no_vocals.wav")
+    assert row["vocals_path"].endswith("/vocals.wav")
+    assert row["no_vocals_path"].endswith("/no_vocals.wav")
+
+
+def test_music_separation_rejects_clean_voice_task(tmp_path: Path) -> None:
+    input_path = tmp_path / "Song.stem.mp4"
+    input_path.write_bytes(b"music")
+
+    with patch("scripts.run_music_separation.DemucsCliEngine.separate") as separate_mock:
+        try:
+            run_music_separation(
+                input_path=input_path,
+                output_root=tmp_path / "runs",
+                task_name=CLEAN_VOICE,
+            )
+        except ValueError as exc:
+            assert "Unsupported music separation task: clean_voice" in str(exc)
+        else:
+            raise AssertionError("Expected clean_voice to be rejected")
+
+    separate_mock.assert_not_called()
 
 
 def test_music_separation_main_can_run_with_mocked_engine(tmp_path: Path, capsys: object) -> None:
@@ -98,6 +147,8 @@ def test_music_separation_main_can_run_with_mocked_engine(tmp_path: Path, capsys
         str(output_root),
         "--demucs-python",
         "/isolated/bin/python",
+        "--task",
+        REMOVE_VOCALS,
     ]
     with patch("sys.argv", argv):
         with patch("scripts.run_music_separation.DemucsCliEngine.separate", side_effect=mock_separate):
@@ -106,4 +157,13 @@ def test_music_separation_main_can_run_with_mocked_engine(tmp_path: Path, capsys
     assert exit_code == 0
     captured = capsys.readouterr()
     assert "Wrote music separation run:" in captured.out
-    assert list(output_root.glob("Song.stem-*/summary.csv"))
+    row = _read_csv_rows(next(output_root.glob("Song.stem-*/summary.csv")))[0]
+    assert row["task"] == REMOVE_VOCALS
+    assert row["primary_output_label"] == "no_vocals"
+
+
+def test_music_separation_default_task_is_extract_vocals() -> None:
+    parser = build_arg_parser()
+    args = parser.parse_args(["--input", "song.wav"])
+
+    assert args.task == EXTRACT_VOCALS
