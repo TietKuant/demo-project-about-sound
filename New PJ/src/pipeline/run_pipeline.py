@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from src.api.contracts import DenoiseRequest, DenoiseResult
+from src.api.contracts import DenoiseRequest, DenoiseResult, OutputArtifact, ProcessingResult
 from src.eval.checks import evaluate_output_artifact
 from src.engine.base import DenoiseEngine
 from src.engine.deepfilternet_cli_engine import DeepFilterNetCliEngine
@@ -23,6 +23,9 @@ from src.media.ffmpeg_wrapper import FFmpegWrapper
 from src.storage.manifest import build_run_manifest, write_manifest
 
 
+VIDEO_OUTPUT_SUFFIXES = {".mp4", ".mov", ".mkv"}
+
+
 def _log(message: str) -> None:
     print(message)
 
@@ -36,6 +39,58 @@ def _build_engine(engine_name: str, ffmpeg_wrapper: FFmpegWrapper) -> DenoiseEng
     if engine_name == "deepfilternet":
         return DeepFilterNetCliEngine()
     raise ValueError(f"Unsupported denoise engine: {engine_name}")
+
+
+def _output_media_type(path: Path) -> str:
+    """Infer the user-facing media type from the final output suffix."""
+    return "video" if path.suffix.lower() in VIDEO_OUTPUT_SUFFIXES else "audio"
+
+
+def _pipeline_status_failed(status: str) -> bool:
+    normalized = status.strip().lower()
+    return normalized in {"failed", "error"} or normalized.startswith("failed")
+
+
+def pipeline_result_to_processing_result(
+    result: DenoiseResult,
+    *,
+    task_name: str = "clean_voice",
+    runtime_sec: float | None = None,
+) -> ProcessingResult:
+    """Adapt the existing single-output pipeline result to the V2 artifact contract."""
+    if _pipeline_status_failed(result.status):
+        return ProcessingResult(
+            task_name=task_name,
+            engine_name=result.engine_name,
+            status="failed",
+            runtime_sec=runtime_sec,
+            outputs=[],
+            error=f"Pipeline status indicates failure: {result.status}",
+        )
+    if result.final_output_path is None:
+        return ProcessingResult(
+            task_name=task_name,
+            engine_name=result.engine_name,
+            status="failed",
+            runtime_sec=runtime_sec,
+            outputs=[],
+            error="Pipeline did not return a final output path.",
+        )
+
+    return ProcessingResult(
+        task_name=task_name,
+        engine_name=result.engine_name,
+        status="success",
+        runtime_sec=runtime_sec,
+        outputs=[
+            OutputArtifact(
+                label="restored",
+                path=result.final_output_path,
+                media_type=_output_media_type(result.final_output_path),
+                role="primary",
+            )
+        ],
+    )
 
 
 def run_pipeline(request: DenoiseRequest, ffmpeg_wrapper: FFmpegWrapper | None = None) -> DenoiseResult:
