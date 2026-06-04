@@ -6,7 +6,13 @@ import csv
 from pathlib import Path
 from unittest.mock import patch
 
-from app.audio_task_demo import run_demo_task
+from app.audio_task_demo import (
+    MUSIC_INTENT,
+    SPEECH_INTENT,
+    UNKNOWN_INTENT,
+    analyze_demo_input,
+    run_demo_task,
+)
 from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, REMOVE_VOCALS
 
 
@@ -41,6 +47,68 @@ def _write_summary(run_dir: Path, *, task: str, primary_output_path: Path | None
         )
 
 
+def _feature_row(
+    *,
+    status: str = "success",
+    duration_sec: str = "9.000000",
+    rms_energy: str = "0.0500000000",
+    zero_crossing_rate: str = "0.0200000000",
+    spectral_centroid_hz: str = "1800.000000",
+    spectral_bandwidth_hz: str = "2500.000000",
+    error: str = "",
+) -> dict[str, str]:
+    return {
+        "status": status,
+        "duration_sec": duration_sec,
+        "rms_energy": rms_energy,
+        "zero_crossing_rate": zero_crossing_rate,
+        "spectral_centroid_hz": spectral_centroid_hz,
+        "spectral_bandwidth_hz": spectral_bandwidth_hz,
+        "error": error,
+    }
+
+
+def test_analyze_demo_input_recommends_clean_voice_for_speech_intent(tmp_path: Path) -> None:
+    input_path = tmp_path / "speech.wav"
+    input_path.write_bytes(b"audio")
+
+    with patch("app.audio_task_demo._extract_feature_row", return_value=_feature_row()):
+        markdown, table, recommended_task = analyze_demo_input(input_path, SPEECH_INTENT)
+
+    assert recommended_task == CLEAN_VOICE
+    assert ["duration_sec", "9.000000"] in table
+    assert ["rms_energy", "0.0500000000"] in table
+    assert "feature-based recommendation aid" in markdown
+
+
+def test_analyze_demo_input_recommends_extract_vocals_for_music_intent(tmp_path: Path) -> None:
+    input_path = tmp_path / "song.mp4"
+    input_path.write_bytes(b"video")
+
+    with patch(
+        "app.audio_task_demo._extract_feature_row",
+        return_value=_feature_row(zero_crossing_rate="0.0300000000", spectral_centroid_hz="2300.000000"),
+    ):
+        markdown, table, recommended_task = analyze_demo_input(input_path, MUSIC_INTENT)
+
+    assert recommended_task == EXTRACT_VOCALS
+    assert ["spectral_centroid_hz", "2300.000000"] in table
+    assert "High-frequency/noisy profile" in markdown
+
+
+def test_analyze_demo_input_unknown_intent_returns_no_recommendation(tmp_path: Path) -> None:
+    input_path = tmp_path / "unknown.wav"
+    input_path.write_bytes(b"audio")
+
+    with patch("app.audio_task_demo._extract_feature_row", return_value=_feature_row()):
+        markdown, table, recommended_task = analyze_demo_input(input_path, UNKNOWN_INTENT)
+
+    assert recommended_task is None
+    assert ["zero_crossing_rate", "0.0200000000"] in table
+    assert "No automatic recommendation" in markdown
+    assert "unknown" in markdown.lower()
+
+
 def test_demo_clean_voice_passes_through_and_returns_primary_output(tmp_path: Path) -> None:
     input_path = tmp_path / "speech.wav"
     output_root = tmp_path / "demo-runs"
@@ -56,7 +124,12 @@ def test_demo_clean_voice_passes_through_and_returns_primary_output(tmp_path: Pa
         return run_dir
 
     with patch("app.audio_task_demo.run_audio_task", side_effect=mock_run_audio_task):
-        markdown, table, downloadable = run_demo_task(input_path, CLEAN_VOICE, output_root=output_root)
+        markdown, table, downloadable = run_demo_task(
+            input_path,
+            CLEAN_VOICE,
+            content_intent=SPEECH_INTENT,
+            output_root=output_root,
+        )
 
     assert calls[0]["task"] == CLEAN_VOICE
     assert calls[0]["input_path"] == input_path
@@ -83,7 +156,12 @@ def test_demo_extract_vocals_passes_through(tmp_path: Path) -> None:
         return run_dir
 
     with patch("app.audio_task_demo.run_audio_task", side_effect=mock_run_audio_task):
-        _, table, downloadable = run_demo_task(input_path, EXTRACT_VOCALS, output_root=output_root)
+        _, table, downloadable = run_demo_task(
+            input_path,
+            EXTRACT_VOCALS,
+            content_intent=MUSIC_INTENT,
+            output_root=output_root,
+        )
 
     assert calls[0]["task"] == EXTRACT_VOCALS
     assert ["task", EXTRACT_VOCALS] in table
@@ -106,12 +184,54 @@ def test_demo_remove_vocals_passes_through(tmp_path: Path) -> None:
         return run_dir
 
     with patch("app.audio_task_demo.run_audio_task", side_effect=mock_run_audio_task):
-        _, table, downloadable = run_demo_task(input_path, REMOVE_VOCALS, output_root=output_root)
+        _, table, downloadable = run_demo_task(
+            input_path,
+            REMOVE_VOCALS,
+            content_intent=MUSIC_INTENT,
+            output_root=output_root,
+        )
 
     assert calls[0]["task"] == REMOVE_VOCALS
     assert ["task", REMOVE_VOCALS] in table
     assert downloadable.endswith("no_vocals.wav")
 
+
+def test_demo_blocks_speech_intent_with_extract_vocals(tmp_path: Path) -> None:
+    input_path = tmp_path / "speech.wav"
+    input_path.write_bytes(b"audio")
+
+    with patch("app.audio_task_demo.run_audio_task") as run_mock:
+        markdown, table, downloadable = run_demo_task(
+            input_path,
+            EXTRACT_VOCALS,
+            content_intent=SPEECH_INTENT,
+            output_root=tmp_path / "runs",
+        )
+
+    run_mock.assert_not_called()
+    assert "Blocked" in markdown
+    assert "Speech/noisy speech" in markdown
+    assert table == []
+    assert downloadable is None
+
+
+def test_demo_blocks_speech_intent_with_remove_vocals(tmp_path: Path) -> None:
+    input_path = tmp_path / "speech.wav"
+    input_path.write_bytes(b"audio")
+
+    with patch("app.audio_task_demo.run_audio_task") as run_mock:
+        markdown, table, downloadable = run_demo_task(
+            input_path,
+            REMOVE_VOCALS,
+            content_intent=SPEECH_INTENT,
+            output_root=tmp_path / "runs",
+        )
+
+    run_mock.assert_not_called()
+    assert "Blocked" in markdown
+    assert "Speech/noisy speech" in markdown
+    assert table == []
+    assert downloadable is None
 
 def test_demo_missing_file_input_returns_clear_error(tmp_path: Path) -> None:
     missing_input = tmp_path / "missing.wav"
