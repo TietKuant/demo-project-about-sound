@@ -75,6 +75,24 @@ The script writes:
 
 These are generated artifacts and should not be committed.
 
+## Inference
+
+Trained checkpoints can be used by:
+
+```text
+scripts/run_target_noise_suppressor.py
+```
+
+The inference script loads `checkpoint.pt`, reads an input audio file, runs the model, and writes a generated enhanced WAV file.
+
+If a clean `--target` file is provided, the script also writes before/after comparison metrics:
+
+- `baseline_mixed_l1`
+- `model_output_l1`
+- `output_mse`
+
+This is a standalone inference script only. It is not integrated into the app UI or `scripts/run_audio_task.py` yet.
+
 ## Metrics
 
 Current metrics include:
@@ -92,23 +110,21 @@ This gives a simple before/after training signal, not a final speech-quality eva
 
 ## Current Scope
 
-This sprint adds training only.
+This implementation adds a custom training baseline and a standalone inference script.
 
 It does not:
 
 - integrate the model into the app,
-- add an inference engine,
-- change `scripts/run_audio_task.py`,
+- integrate the model into `scripts/run_audio_task.py`,
 - modify the Gradio UI,
-- train a final thesis model,
-- commit checkpoints or datasets.
+- train a final thesis-grade model,
+- commit checkpoints, generated audio, or datasets.
 
 ## Future Work
 
 The next sprint can add:
 
-- standalone inference script,
-- checkpoint loading,
-- output WAV export,
+- a reusable engine adapter,
+- integration with `scripts/run_audio_task.py`,
 - evaluation against held-out target-noise samples,
-- optional app/runner integration after the model proves useful.
+- optional app UI integration after the standalone model path proves useful.
