@@ -35,6 +35,14 @@ FEATURE_COLUMNS = [
     "zero_crossing_rate",
     "spectral_centroid_hz",
     "spectral_bandwidth_hz",
+    "spectral_rolloff_hz",
+    "spectral_flatness",
+    "low_band_energy_ratio",
+    "mid_band_energy_ratio",
+    "high_band_energy_ratio",
+    "rms_std",
+    "zcr_std",
+    "silence_ratio",
 ]
 FEATURE_ROW_COLUMNS = [
     "sample_id",
@@ -89,29 +97,20 @@ def _extract_feature_rows(manifest_path: Path) -> list[dict[str, str]]:
                 "source": manifest_row["source"],
                 "split": manifest_row["split"] or "train",
                 "status": "failed",
-                "duration_sec": "",
-                "rms_energy": "",
-                "zero_crossing_rate": "",
-                "spectral_centroid_hz": "",
-                "spectral_bandwidth_hz": "",
                 "notes": manifest_row["notes"],
                 "error": "",
             }
+            row.update({column: "" for column in FEATURE_COLUMNS})
             try:
                 if not input_path.exists():
                     raise FileNotFoundError(f"Input file not found: {input_path}")
                 audio, sample_rate = _audio_for_features(input_path, temp_dir)
                 features = _features(audio, sample_rate)
-                row.update(
-                    {
-                        "status": "success",
-                        "duration_sec": f"{audio.size / sample_rate:.6f}",
-                        "rms_energy": f"{features['rms_energy']:.10f}",
-                        "zero_crossing_rate": f"{features['zero_crossing_rate']:.10f}",
-                        "spectral_centroid_hz": f"{features['spectral_centroid_hz']:.6f}",
-                        "spectral_bandwidth_hz": f"{features['spectral_bandwidth_hz']:.6f}",
-                    }
-                )
+                row["status"] = "success"
+                row["duration_sec"] = f"{audio.size / sample_rate:.6f}"
+                for column in FEATURE_COLUMNS:
+                    if column != "duration_sec":
+                        row[column] = f"{features[column]:.10f}"
             except Exception as exc:
                 row["error"] = str(exc)
             feature_rows.append(row)

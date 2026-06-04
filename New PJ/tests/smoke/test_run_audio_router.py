@@ -68,6 +68,14 @@ def test_run_audio_router_writes_summary(tmp_path: Path) -> None:
     assert isinstance(written["confidence"], float)
     assert "rms_energy" in written["features"]
     assert "duration_sec" in written["features"]
+    assert "spectral_rolloff_hz" in written["features"]
+    assert "spectral_flatness" in written["features"]
+    assert "low_band_energy_ratio" in written["features"]
+    assert "mid_band_energy_ratio" in written["features"]
+    assert "high_band_energy_ratio" in written["features"]
+    assert "rms_std" in written["features"]
+    assert "zcr_std" in written["features"]
+    assert "silence_ratio" in written["features"]
 
 
 def test_run_audio_router_raises_for_missing_input(tmp_path: Path) -> None:

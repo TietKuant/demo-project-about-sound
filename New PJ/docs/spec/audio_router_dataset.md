@@ -27,6 +27,7 @@ A `speech_noise` prediction may suggest `clean_voice` or the experimental `targe
 The builder can use any subset of these local sources:
 
 - `target_noise_v1`: uses `mixed_path` as `speech_noise`.
+- `VoiceBank-DEMAND`: scans clean/noisy train/test WAV folders as additional `speech_noise` coverage.
 - `musdb18_preview`: scans `.stem.mp4` files as `music`.
 - `ESC-50`: reads `meta/esc50.csv` and maps rows to `environment_noise`.
 - `UrbanSound8K`: reads metadata and maps rows to `environment_noise`.
@@ -58,6 +59,8 @@ The script trains a small PyTorch classifier from lightweight audio features:
 - zero crossing rate,
 - spectral centroid,
 - spectral bandwidth.
+
+S9C expands the feature set with frame-level and band-energy features: spectral rolloff, spectral flatness, low/mid/high band energy ratios, RMS standard deviation, ZCR standard deviation, and silence ratio.
 
 The router predicts content type only: `speech_noise`, `music`, or `environment_noise`.
 It does not decide final user intent by itself.

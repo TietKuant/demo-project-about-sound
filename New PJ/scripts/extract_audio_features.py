@@ -44,6 +44,8 @@ FIELDNAMES = [
     "error",
 ]
 EPSILON = 1e-12
+FRAME_LENGTH = 1024
+HOP_LENGTH = 512
 
 
 def _load_manifest(manifest_path: Path, limit: int | None) -> list[dict[str, str]]:
@@ -156,6 +158,21 @@ def _audio_for_features(input_path: Path, temp_dir: Path) -> tuple[np.ndarray, i
     return _read_pcm_wav(decoded_path)
 
 
+def _frame_audio(audio: np.ndarray, frame_length: int = FRAME_LENGTH, hop_length: int = HOP_LENGTH) -> np.ndarray:
+    if audio.size < frame_length:
+        audio = np.pad(audio, (0, frame_length - audio.size))
+    frame_count = 1 + max(0, (audio.size - frame_length) // hop_length)
+    frame_starts = np.arange(frame_count)[:, None] * hop_length
+    frame_offsets = np.arange(frame_length)[None, :]
+    return audio[frame_starts + frame_offsets]
+
+
+def _frame_zero_crossing_rates(frames: np.ndarray) -> np.ndarray:
+    signs = np.signbit(frames)
+    crossings = np.count_nonzero(signs[:, 1:] != signs[:, :-1], axis=1)
+    return crossings / max(frames.shape[1] - 1, 1)
+
+
 def _features(audio: np.ndarray, sample_rate: int) -> dict[str, float]:
     centered = audio - float(np.mean(audio))
     rms_energy = float(np.sqrt(np.mean(centered**2)))
@@ -176,11 +193,46 @@ def _features(audio: np.ndarray, sample_rate: int) -> dict[str, float]:
             np.sqrt(np.sum(((frequencies - spectral_centroid_hz) ** 2) * spectrum) / magnitude_sum)
         )
 
+    frames = _frame_audio(centered)
+    frame_rms = np.sqrt(np.mean(frames**2, axis=1))
+    frame_zcr = _frame_zero_crossing_rates(frames)
+    windowed_frames = frames * np.hanning(frames.shape[1])
+    frame_spectrum = np.abs(np.fft.rfft(windowed_frames, axis=1)) + EPSILON
+    frame_frequencies = np.fft.rfftfreq(frames.shape[1], d=1.0 / sample_rate)
+    frame_magnitude = np.sum(frame_spectrum, axis=1)
+    cumulative_magnitude = np.cumsum(frame_spectrum, axis=1)
+    rolloff_threshold = 0.85 * frame_magnitude
+    rolloff_indices = np.argmax(cumulative_magnitude >= rolloff_threshold[:, None], axis=1)
+    spectral_rolloff_hz = float(np.mean(frame_frequencies[rolloff_indices]))
+    spectral_flatness = float(np.mean(np.exp(np.mean(np.log(frame_spectrum), axis=1)) / np.mean(frame_spectrum, axis=1)))
+
+    power_spectrum = frame_spectrum**2
+    total_power = float(np.sum(power_spectrum))
+    if total_power <= EPSILON:
+        low_band_energy_ratio = 0.0
+        mid_band_energy_ratio = 0.0
+        high_band_energy_ratio = 0.0
+    else:
+        low_band_energy_ratio = float(np.sum(power_spectrum[:, frame_frequencies < 300.0]) / total_power)
+        mid_band_energy_ratio = float(
+            np.sum(power_spectrum[:, (frame_frequencies >= 300.0) & (frame_frequencies < 3400.0)]) / total_power
+        )
+        high_band_energy_ratio = float(np.sum(power_spectrum[:, frame_frequencies >= 3400.0]) / total_power)
+    silence_threshold = max(float(np.max(frame_rms)) * 0.05, EPSILON)
+
     return {
         "rms_energy": rms_energy,
         "zero_crossing_rate": zero_crossing_rate,
         "spectral_centroid_hz": spectral_centroid_hz,
         "spectral_bandwidth_hz": spectral_bandwidth_hz,
+        "spectral_rolloff_hz": spectral_rolloff_hz,
+        "spectral_flatness": spectral_flatness,
+        "low_band_energy_ratio": low_band_energy_ratio,
+        "mid_band_energy_ratio": mid_band_energy_ratio,
+        "high_band_energy_ratio": high_band_energy_ratio,
+        "rms_std": float(np.std(frame_rms)),
+        "zcr_std": float(np.std(frame_zcr)),
+        "silence_ratio": float(np.mean(frame_rms <= silence_threshold)),
     }
 
 

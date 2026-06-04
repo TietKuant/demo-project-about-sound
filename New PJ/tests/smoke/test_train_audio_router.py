@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from scripts.train_audio_router import train_audio_router
+from scripts.train_audio_router import FEATURE_COLUMNS, train_audio_router
 
 
 def _write_sine_wav(path: Path, frequency: float, duration_sec: float = 0.12, sample_rate: int = 8000) -> None:
@@ -93,6 +93,21 @@ def test_train_audio_router_writes_artifacts(tmp_path: Path) -> None:
 
     label_mapping = json.loads((output_dir / "label_mapping.json").read_text(encoding="utf-8"))
     assert set(label_mapping["label_to_index"]) == {"speech_noise", "music", "environment_noise"}
+
+    with (output_dir / "feature_rows.csv").open(newline="", encoding="utf-8") as csv_file:
+        reader = csv.DictReader(csv_file)
+        assert reader.fieldnames is not None
+        for column in FEATURE_COLUMNS:
+            assert column in reader.fieldnames
+        feature_rows = list(reader)
+    assert feature_rows[0]["spectral_rolloff_hz"]
+    assert feature_rows[0]["spectral_flatness"]
+    assert feature_rows[0]["low_band_energy_ratio"]
+    assert feature_rows[0]["mid_band_energy_ratio"]
+    assert feature_rows[0]["high_band_energy_ratio"]
+    assert feature_rows[0]["rms_std"]
+    assert feature_rows[0]["zcr_std"]
+    assert feature_rows[0]["silence_ratio"]
 
 
 def test_train_audio_router_requires_test_rows(tmp_path: Path) -> None:

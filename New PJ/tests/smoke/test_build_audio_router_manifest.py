@@ -50,6 +50,19 @@ def _create_musdb(root: Path, count: int = 2) -> None:
         path.write_bytes(b"placeholder")
 
 
+def _create_voicebank(root: Path) -> None:
+    for folder_name, filenames in {
+        "clean_trainset_28spk_wav": ["clean_train_0.wav", "clean_train_1.wav"],
+        "clean_testset_wav": ["clean_test_0.wav"],
+        "noisy_trainset_28spk_wav": ["noisy_train_0.wav", "noisy_train_1.wav"],
+        "noisy_testset_wav": ["noisy_test_0.wav"],
+    }.items():
+        folder = root / folder_name
+        folder.mkdir(parents=True, exist_ok=True)
+        for filename in filenames:
+            (folder / filename).write_bytes(b"placeholder")
+
+
 def _create_esc50(root: Path, count: int = 2) -> None:
     (root / "meta").mkdir(parents=True, exist_ok=True)
     (root / "audio").mkdir(parents=True, exist_ok=True)
@@ -83,14 +96,17 @@ def test_build_audio_router_manifest_from_all_sources(tmp_path: Path) -> None:
     output = tmp_path / "data" / "manifests" / "audio_router.local.csv"
     target_manifest = tmp_path / "outputs" / "target-noise-v1" / "manifests" / "target_noise_suppression.csv"
     musdb_root = tmp_path / "data" / "external" / "musdb18-preview"
+    voicebank_root = tmp_path / "data" / "external" / "voicebank"
     esc50_root = tmp_path / "data" / "external" / "ESC-50-master"
     urbansound_metadata, urbansound_audio = _create_urbansound(tmp_path / "data" / "external" / "UrbanSound8K")
     _write_target_noise_manifest(target_manifest)
     _create_musdb(musdb_root)
+    _create_voicebank(voicebank_root)
     _create_esc50(esc50_root)
 
     result = build_audio_router_manifest(
         target_noise_manifest=target_manifest,
+        voicebank_root=voicebank_root,
         musdb_root=musdb_root,
         esc50_root=esc50_root,
         urbansound8k_metadata=urbansound_metadata,
@@ -104,7 +120,14 @@ def test_build_audio_router_manifest_from_all_sources(tmp_path: Path) -> None:
     assert result == output.resolve()
     assert list(rows[0].keys()) == OUTPUT_COLUMNS
     assert {row["router_label"] for row in rows} == {SPEECH_NOISE, MUSIC, ENVIRONMENT_NOISE}
-    assert {row["source"] for row in rows} == {"target_noise_v1", "musdb18_preview", "esc50", "urbansound8k"}
+    assert {row["source"] for row in rows} == {
+        "target_noise_v1",
+        "voicebank_clean",
+        "voicebank_noisy",
+        "musdb18_preview",
+        "esc50",
+        "urbansound8k",
+    }
     assert all(not Path(row["input_path"]).is_absolute() for row in rows)
 
 
@@ -143,6 +166,40 @@ def test_build_audio_router_manifest_works_with_one_source(tmp_path: Path) -> No
     assert len(rows) == 1
     assert rows[0]["router_label"] == MUSIC
     assert rows[0]["source"] == "musdb18_preview"
+
+
+def test_voicebank_root_adds_speech_noise_rows(tmp_path: Path) -> None:
+    output = tmp_path / "data" / "manifests" / "audio_router.local.csv"
+    voicebank_root = tmp_path / "data" / "external" / "voicebank"
+    _create_voicebank(voicebank_root)
+
+    build_audio_router_manifest(voicebank_root=voicebank_root, output=output, max_per_label=20)
+
+    rows = _read_rows(output)
+    assert {row["router_label"] for row in rows} == {SPEECH_NOISE}
+    assert {row["source"] for row in rows} == {"voicebank_clean", "voicebank_noisy"}
+    assert {row["split"] for row in rows} == {"train", "test"}
+    assert all(row["notes"].startswith("folder=") for row in rows)
+
+
+def test_speech_noise_sampling_is_balanced_by_source(tmp_path: Path) -> None:
+    output = tmp_path / "data" / "manifests" / "audio_router.local.csv"
+    target_manifest = tmp_path / "target" / "target_noise_suppression.csv"
+    voicebank_root = tmp_path / "voicebank"
+    _write_target_noise_manifest(target_manifest, count=10)
+    _create_voicebank(voicebank_root)
+
+    build_audio_router_manifest(
+        target_noise_manifest=target_manifest,
+        voicebank_root=voicebank_root,
+        output=output,
+        max_per_label=3,
+        seed=5,
+    )
+
+    speech_sources = [row["source"] for row in _read_rows(output) if row["router_label"] == SPEECH_NOISE]
+    assert len(speech_sources) == 3
+    assert set(speech_sources) == {"target_noise_v1", "voicebank_clean", "voicebank_noisy"}
 
 
 def test_target_noise_project_relative_path_resolves_from_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

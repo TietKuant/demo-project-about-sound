@@ -20,6 +20,12 @@ OUTPUT_COLUMNS = ["sample_id", "input_path", "router_label", "source", "split", 
 TARGET_NOISE_COLUMNS = {"mixed_path"}
 URBANSOUND8K_COLUMNS = {"slice_file_name", "fold", "class"}
 ESC50_COLUMNS = {"filename", "fold", "category"}
+VOICEBANK_FOLDERS = {
+    "clean_trainset_28spk_wav": ("voicebank_clean", "train"),
+    "clean_testset_wav": ("voicebank_clean", "test"),
+    "noisy_trainset_28spk_wav": ("voicebank_noisy", "train"),
+    "noisy_testset_wav": ("voicebank_noisy", "test"),
+}
 
 
 def _readable_path(path: Path, output_manifest: Path) -> str:
@@ -106,6 +112,27 @@ def _musdb_rows(musdb_root: Path, output_manifest: Path) -> list[dict[str, str]]
     return rows
 
 
+def _voicebank_rows(voicebank_root: Path, output_manifest: Path) -> list[dict[str, str]]:
+    root = Path(voicebank_root).resolve()
+    rows = []
+    for folder_name, (source, split) in VOICEBANK_FOLDERS.items():
+        folder = root / folder_name
+        if not folder.exists():
+            continue
+        for path in sorted(folder.glob("*.wav")):
+            rows.append(
+                {
+                    "sample_id": path.stem,
+                    "input_path": _readable_path(path, output_manifest),
+                    "router_label": SPEECH_NOISE,
+                    "source": source,
+                    "split": split,
+                    "notes": f"folder={folder_name}",
+                }
+            )
+    return rows
+
+
 def _esc50_rows(esc50_root: Path, output_manifest: Path) -> list[dict[str, str]]:
     root = Path(esc50_root).resolve()
     metadata_path = root / "meta" / "esc50.csv"
@@ -155,16 +182,38 @@ def _sample_rows(rows: list[dict[str, str]], max_per_label: int, seed: int) -> l
     if max_per_label <= 0:
         raise ValueError("--max-per-label must be greater than zero.")
 
-    rows_by_label: dict[str, list[dict[str, str]]] = defaultdict(list)
+    rows_by_label_and_source: dict[str, dict[str, list[dict[str, str]]]] = defaultdict(lambda: defaultdict(list))
     for row in rows:
-        rows_by_label[row["router_label"]].append(row)
+        rows_by_label_and_source[row["router_label"]][row["source"]].append(row)
 
     sampled_rows: list[dict[str, str]] = []
     for label in LABEL_ORDER:
-        label_rows = list(rows_by_label.get(label, []))
-        rng = random.Random(f"{seed}:{label}")
-        rng.shuffle(label_rows)
-        sampled_rows.extend(label_rows[:max_per_label])
+        source_groups = rows_by_label_and_source.get(label, {})
+        if not source_groups:
+            continue
+
+        shuffled_by_source: dict[str, list[dict[str, str]]] = {}
+        for source, source_rows in sorted(source_groups.items()):
+            shuffled_rows = list(source_rows)
+            rng = random.Random(f"{seed}:{label}:{source}")
+            rng.shuffle(shuffled_rows)
+            shuffled_by_source[source] = shuffled_rows
+
+        sources = sorted(shuffled_by_source)
+        base_quota = max_per_label // len(sources)
+        remainder = max_per_label % len(sources)
+        selected: list[dict[str, str]] = []
+        leftovers: list[dict[str, str]] = []
+        for index, source in enumerate(sources):
+            source_rows = shuffled_by_source[source]
+            quota = base_quota + (1 if index < remainder else 0)
+            selected.extend(source_rows[:quota])
+            leftovers.extend(source_rows[quota:])
+
+        rng = random.Random(f"{seed}:{label}:fill")
+        rng.shuffle(leftovers)
+        selected.extend(leftovers[: max(0, max_per_label - len(selected))])
+        sampled_rows.extend(selected[:max_per_label])
 
     return sorted(sampled_rows, key=lambda row: (LABEL_ORDER.index(row["router_label"]), row["source"], row["split"], row["sample_id"]))
 
@@ -173,6 +222,7 @@ def build_audio_router_manifest(
     *,
     output: Path,
     target_noise_manifest: Path | None = None,
+    voicebank_root: Path | None = None,
     musdb_root: Path | None = None,
     esc50_root: Path | None = None,
     urbansound8k_metadata: Path | None = None,
@@ -186,6 +236,8 @@ def build_audio_router_manifest(
 
     if target_noise_manifest is not None:
         rows.extend(_target_noise_rows(target_noise_manifest, output_path))
+    if voicebank_root is not None:
+        rows.extend(_voicebank_rows(voicebank_root, output_path))
     if musdb_root is not None:
         rows.extend(_musdb_rows(musdb_root, output_path))
     if esc50_root is not None:
@@ -212,6 +264,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     """Create the audio router manifest CLI parser."""
     parser = argparse.ArgumentParser(description="Build an audio router training manifest.")
     parser.add_argument("--target-noise-manifest", type=Path, default=None)
+    parser.add_argument("--voicebank-root", type=Path, default=None)
     parser.add_argument("--musdb-root", type=Path, default=None)
     parser.add_argument("--esc50-root", type=Path, default=None)
     parser.add_argument("--urbansound8k-metadata", type=Path, default=None)
@@ -228,6 +281,7 @@ def main() -> int:
     try:
         output_path = build_audio_router_manifest(
             target_noise_manifest=args.target_noise_manifest,
+            voicebank_root=args.voicebank_root,
             musdb_root=args.musdb_root,
             esc50_root=args.esc50_root,
             urbansound8k_metadata=args.urbansound8k_metadata,
