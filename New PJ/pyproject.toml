@@ -18,3 +18,15 @@ dependencies = [
 
 [project.scripts]
 offline-denoise-demo = "src.pipeline.run_pipeline:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+  ".git",
+  ".venv",
+  "venv",
+  "__pycache__",
+  "data",
+  "outputs",
+  "tmp",
+]
