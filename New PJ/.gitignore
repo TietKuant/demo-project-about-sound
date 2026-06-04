@@ -64,3 +64,6 @@ outputs/spikes/
 
 # Local generated manifests
 data/manifests/*.local.csv
+
+# Vietnamese real sample runtime outputs
+outputs/vietnamese-real-runs/
