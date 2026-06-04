@@ -1,0 +1,4 @@
+sample_id,path,split,notes
+speech_001,../external/voicebank/clean_trainset_28spk_wav/p226_001.wav,train,example path only
+speech_002,../external/voicebank/clean_trainset_28spk_wav/p226_002.wav,val,example path only
+speech_003,../external/voicebank/clean_testset_wav/p232_001.wav,test,example path only

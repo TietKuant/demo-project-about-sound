@@ -1,0 +1,4 @@
+noise_id,path,noise_label,source,notes
+dog_001,../external/urbansound8k/audio/fold1/dog_001.wav,dog_bark,UrbanSound8K example,example path only
+horn_001,../external/urbansound8k/audio/fold2/horn_001.wav,car_horn,UrbanSound8K example,example path only
+siren_001,../external/esc50/audio/siren_001.wav,siren,ESC-50 example,example path only
