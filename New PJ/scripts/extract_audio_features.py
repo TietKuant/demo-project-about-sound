@@ -106,6 +106,10 @@ def _decode_to_temp_wav(input_path: Path, temp_dir: Path) -> Path:
             "pcm_s16le",
             "-ac",
             "1",
+            "-ar",
+            "16000",
+            "-sample_fmt",
+            "s16",
             str(wav_path),
         ],
         capture_output=True,
@@ -143,7 +147,11 @@ def _read_pcm_wav(path: Path) -> tuple[np.ndarray, int]:
 
 def _audio_for_features(input_path: Path, temp_dir: Path) -> tuple[np.ndarray, int]:
     if input_path.suffix.lower() == ".wav":
-        return _read_pcm_wav(input_path)
+        try:
+            return _read_pcm_wav(input_path)
+        except Exception:
+            decoded_path = _decode_to_temp_wav(input_path, temp_dir)
+            return _read_pcm_wav(decoded_path)
     decoded_path = _decode_to_temp_wav(input_path, temp_dir)
     return _read_pcm_wav(decoded_path)
 

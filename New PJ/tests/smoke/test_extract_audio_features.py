@@ -9,7 +9,7 @@ import wave
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.extract_audio_features import extract_audio_features
+from scripts.extract_audio_features import _audio_for_features, extract_audio_features
 
 
 def _write_manifest(path: Path, rows: list[dict[str, str]]) -> None:
@@ -128,3 +128,30 @@ def test_extract_audio_features_marks_missing_failed_by_default(tmp_path: Path) 
     assert rows[0]["rms_energy"] == ""
     assert rows[0]["zero_crossing_rate"] == ""
     assert "Input file not found" in rows[0]["error"]
+
+
+def test_audio_for_features_falls_back_to_ffmpeg_when_direct_wav_read_fails(tmp_path: Path) -> None:
+    input_path = tmp_path / "unsupported.wav"
+    temp_dir = tmp_path / "tmp"
+    temp_dir.mkdir()
+    input_path.write_bytes(b"not a standard wav")
+
+    def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        output_path = Path(command[-1])
+        _write_sine_wav(output_path)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    with patch("scripts.extract_audio_features.subprocess.run", side_effect=fake_run) as subprocess_mock:
+        audio, sample_rate = _audio_for_features(input_path, temp_dir)
+
+    assert audio.size > 0
+    assert sample_rate == 16000
+    subprocess_mock.assert_called_once()
+    command = subprocess_mock.call_args.args[0]
+    assert command[:8] == ["ffmpeg", "-y", "-v", "error", "-nostdin", "-i", str(input_path), "-vn"]
+    assert "-ac" in command
+    assert "1" in command
+    assert "-ar" in command
+    assert "16000" in command
+    assert "-sample_fmt" in command
+    assert "s16" in command
