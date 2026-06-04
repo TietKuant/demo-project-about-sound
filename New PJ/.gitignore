@@ -79,3 +79,5 @@ outputs/analysis/
 
 # Generated audit and runtime outputs
 outputs/
+# Python/test/runtime local artifacts
+tmp/
