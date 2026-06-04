@@ -45,5 +45,22 @@ It does not replace the custom target-noise suppressor dataset, which is paired 
 
 ## Current Scope
 
-This sprint only builds the manifest layer.
-It does not add a trained router, app UI changes, or task-runner integration.
+This stage adds the audio router dataset manifest layer and a baseline router training script.
+It does not add app UI changes or task-runner integration yet.
+
+## S9A-2 Baseline Training
+
+S9A-2 adds a baseline training script for the future router.
+The script trains a small PyTorch classifier from lightweight audio features:
+
+- duration,
+- RMS energy,
+- zero crossing rate,
+- spectral centroid,
+- spectral bandwidth.
+
+The router predicts content type only: `speech_noise`, `music`, or `environment_noise`.
+It does not decide final user intent by itself.
+The current feature set is intentionally small and limited, so results should be treated as a baseline rather than a final analyzer.
+
+App integration is future work.
