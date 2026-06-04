@@ -76,3 +76,6 @@ outputs/audio-task-runs/
 
 # Local audio analysis outputs
 outputs/analysis/
+
+# Generated audit and runtime outputs
+outputs/
