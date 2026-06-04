@@ -409,7 +409,7 @@ def create_demo() -> object:
     import gradio as gr
 
     task_names = [task.name for task in list_supported_tasks()]
-    with gr.Blocks(title="ML Audio Processing Demo", css=DEMO_CSS) as demo:
+    with gr.Blocks(title="ML Audio Processing Demo") as demo:
         gr.Markdown(
             "# ML Audio Processing Demo\n"
             "<p class='demo-subtitle'>Analyze an audio/video file, choose a task, and export the processed result.</p>",
