@@ -70,3 +70,6 @@ outputs/vietnamese-real-runs/
 
 # Unified task runner outputs
 outputs/audio-task-runs/
+
+# Local audio analysis outputs
+outputs/analysis/
