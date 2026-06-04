@@ -92,6 +92,15 @@ def test_evaluate_target_noise_suppressor_writes_summary_and_per_sample_metrics(
     assert "improvement_rate" in summary
     assert "mean_baseline_mixed_l1" in summary
     assert "mean_model_output_l1" in summary
+    assert "mean_error_power_improvement_db" in summary
+    assert "by_noise_label" in summary
+    assert "by_snr_db" in summary
+    assert "dog_bark" in summary["by_noise_label"]
+    assert "5" in summary["by_snr_db"]
+    assert "improvement_rate" in summary["by_noise_label"]["dog_bark"]
+    assert "relative_l1_improvement" in summary["by_noise_label"]["dog_bark"]
+    assert "improvement_rate" in summary["by_snr_db"]["5"]
+    assert "relative_l1_improvement" in summary["by_snr_db"]["5"]
     assert summary["split"] == "test"
     assert summary["checkpoint_path"] == str(checkpoint_path.resolve())
     assert summary["manifest_path"] == str(manifest_path.resolve())
@@ -104,3 +113,4 @@ def test_evaluate_target_noise_suppressor_writes_summary_and_per_sample_metrics(
     assert rows[0]["model_output_l1"]
     assert rows[0]["output_mse"]
     assert rows[0]["improved"] in {"true", "false"}
+    assert rows[0]["error_power_improvement_db"]

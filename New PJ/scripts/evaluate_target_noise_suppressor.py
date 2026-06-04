@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -33,7 +34,9 @@ PER_SAMPLE_COLUMNS = [
     "model_output_l1",
     "output_mse",
     "improved",
+    "error_power_improvement_db",
 ]
+EPSILON = 1e-12
 
 
 def _load_manifest_rows(manifest_path: Path) -> list[dict[str, str]]:
@@ -60,6 +63,35 @@ def _resolve_manifest_path(value: str, manifest_path: Path) -> Path:
 
 def _mean(values: list[float]) -> float:
     return float(sum(values) / len(values)) if values else 0.0
+
+
+def _error_power_improvement_db(baseline_error_power: float, model_error_power: float) -> float:
+    return float(10.0 * math.log10((baseline_error_power + EPSILON) / (model_error_power + EPSILON)))
+
+
+def _group_summary(rows: list[dict[str, object]]) -> dict[str, float | int]:
+    total_samples = len(rows)
+    improved_samples = sum(1 for row in rows if bool(row["improved"]))
+    mean_baseline = _mean([float(row["baseline_mixed_l1"]) for row in rows])
+    mean_model = _mean([float(row["model_output_l1"]) for row in rows])
+    relative_improvement = (mean_baseline - mean_model) / mean_baseline if mean_baseline > 0 else 0.0
+    return {
+        "total_samples": total_samples,
+        "improved_samples": improved_samples,
+        "worsened_samples": total_samples - improved_samples,
+        "improvement_rate": float(improved_samples / total_samples) if total_samples else 0.0,
+        "mean_baseline_mixed_l1": mean_baseline,
+        "mean_model_output_l1": mean_model,
+        "mean_output_mse": _mean([float(row["output_mse"]) for row in rows]),
+        "relative_l1_improvement": float(relative_improvement),
+    }
+
+
+def _group_by(rows: list[dict[str, object]], key: str) -> dict[str, dict[str, float | int]]:
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row[key]), []).append(row)
+    return {group: _group_summary(group_rows) for group, group_rows in sorted(grouped.items())}
 
 
 def evaluate_target_noise_suppressor(
@@ -90,6 +122,8 @@ def evaluate_target_noise_suppressor(
     baseline_values: list[float] = []
     output_values: list[float] = []
     mse_values: list[float] = []
+    error_power_improvement_values: list[float] = []
+    metric_rows: list[dict[str, object]] = []
     improved_count = 0
 
     with torch.no_grad():
@@ -101,11 +135,26 @@ def evaluate_target_noise_suppressor(
             model_input = mixed_waveform.to(torch_device).view(1, 1, -1)
             enhanced = model(model_input).squeeze(0).squeeze(0).detach().cpu().clamp(-1.0, 1.0)
             metrics = _paired_metrics(mixed_waveform, enhanced, target_waveform)
+            min_length = min(mixed_waveform.numel(), enhanced.numel(), target_waveform.numel())
+            baseline_error_power = float(torch.mean((mixed_waveform[:min_length] - target_waveform[:min_length]) ** 2).cpu())
+            model_error_power = float(torch.mean((enhanced[:min_length] - target_waveform[:min_length]) ** 2).cpu())
+            error_power_improvement_db = _error_power_improvement_db(baseline_error_power, model_error_power)
             improved = metrics["model_output_l1"] < metrics["baseline_mixed_l1"]
             improved_count += int(improved)
             baseline_values.append(metrics["baseline_mixed_l1"])
             output_values.append(metrics["model_output_l1"])
             mse_values.append(metrics["output_mse"])
+            error_power_improvement_values.append(error_power_improvement_db)
+            metric_rows.append(
+                {
+                    "noise_label": row["noise_label"],
+                    "snr_db": row["snr_db"],
+                    "baseline_mixed_l1": metrics["baseline_mixed_l1"],
+                    "model_output_l1": metrics["model_output_l1"],
+                    "output_mse": metrics["output_mse"],
+                    "improved": improved,
+                }
+            )
             per_sample_rows.append(
                 {
                     "sample_id": row["sample_id"],
@@ -118,6 +167,7 @@ def evaluate_target_noise_suppressor(
                     "model_output_l1": f"{metrics['model_output_l1']:.8f}",
                     "output_mse": f"{metrics['output_mse']:.8f}",
                     "improved": str(improved).lower(),
+                    "error_power_improvement_db": f"{error_power_improvement_db:.8f}",
                 }
             )
 
@@ -133,10 +183,13 @@ def evaluate_target_noise_suppressor(
         "mean_baseline_mixed_l1": mean_baseline,
         "mean_model_output_l1": mean_model,
         "mean_output_mse": _mean(mse_values),
+        "mean_error_power_improvement_db": _mean(error_power_improvement_values),
         "relative_l1_improvement": float(relative_improvement),
         "split": split,
         "checkpoint_path": str(checkpoint),
         "manifest_path": str(manifest),
+        "by_noise_label": _group_by(metric_rows, "noise_label"),
+        "by_snr_db": _group_by(metric_rows, "snr_db"),
     }
 
     per_sample_path = output / "per_sample_metrics.csv"

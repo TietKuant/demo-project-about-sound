@@ -117,8 +117,20 @@ It reports:
 - `mean_model_output_l1`
 - `mean_output_mse`
 - `relative_l1_improvement`
+- grouped diagnostics by `noise_label`
+- grouped diagnostics by `snr_db`
 
 This aggregate result should decide whether the custom model is ready for runner or UI integration.
+
+Grouped diagnostics help explain where the model works and where it fails. For example, the model may improve `dog_bark` samples but worsen `siren` samples, or it may behave differently at low SNR and high SNR.
+
+The evaluator also reports `error_power_improvement_db`, an auxiliary waveform diagnostic:
+
+```text
+10 * log10(baseline_error_power / model_error_power)
+```
+
+Positive values mean the model reduced squared error power relative to the mixed input. This is useful for diagnostics, but waveform L1 remains the primary baseline metric for this sprint.
 
 ## Metrics
 
