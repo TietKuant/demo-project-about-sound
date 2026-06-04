@@ -93,6 +93,33 @@ If a clean `--target` file is provided, the script also writes before/after comp
 
 This is a standalone inference script only. It is not integrated into the app UI or `scripts/run_audio_task.py` yet.
 
+## Aggregate Evaluation
+
+One inference sample is not enough to decide whether the custom checkpoint is useful. A single example can be worse even when the model improves aggregate held-out performance.
+
+Aggregate evaluation uses:
+
+```text
+scripts/evaluate_target_noise_suppressor.py
+```
+
+The evaluator loads one checkpoint, runs inference in memory across multiple held-out manifest rows, and writes:
+
+```text
+<output-dir>/evaluation_summary.json
+<output-dir>/per_sample_metrics.csv
+```
+
+It reports:
+
+- `improvement_rate`
+- `mean_baseline_mixed_l1`
+- `mean_model_output_l1`
+- `mean_output_mse`
+- `relative_l1_improvement`
+
+This aggregate result should decide whether the custom model is ready for runner or UI integration.
+
 ## Metrics
 
 Current metrics include:
@@ -110,7 +137,7 @@ This gives a simple before/after training signal, not a final speech-quality eva
 
 ## Current Scope
 
-This implementation adds a custom training baseline and a standalone inference script.
+This implementation adds a custom training baseline, a standalone inference script, and aggregate checkpoint evaluation.
 
 It does not:
 
@@ -126,5 +153,5 @@ The next sprint can add:
 
 - a reusable engine adapter,
 - integration with `scripts/run_audio_task.py`,
-- evaluation against held-out target-noise samples,
+- richer audio-quality metrics beyond waveform L1/MSE,
 - optional app UI integration after the standalone model path proves useful.
