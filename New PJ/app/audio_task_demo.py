@@ -175,9 +175,15 @@ def _profile_notes(row: dict[str, str]) -> list[str]:
 
 def _recommend_for_intent(content_intent: str) -> tuple[str | None, str]:
     if content_intent == SPEECH_INTENT:
-        return CLEAN_VOICE, "The declared content intent is speech/noisy speech."
+        return CLEAN_VOICE, (
+            "The declared content intent is speech/noisy speech. `clean_voice` is the default recommendation; "
+            "`target_noise_suppression` is an experimental alternative for target-noise examples."
+        )
     if content_intent == MUSIC_INTENT:
-        return EXTRACT_VOCALS, "The declared content intent is music or a music video with vocals."
+        return EXTRACT_VOCALS, (
+            "The declared content intent is music or a music video with vocals. `extract_vocals` is the default; "
+            "`remove_vocals` remains valid for background/accompaniment extraction."
+        )
     return None, "The content intent is not specified, so the demo does not auto-select a task."
 
 
@@ -236,6 +242,12 @@ def _probability_summary(probabilities: object) -> str:
 
 
 def _recommend_with_router(content_intent: str, router_result: dict[str, object]) -> tuple[str | None, str]:
+    if content_intent in {AUTO_INTENT, UNKNOWN_INTENT}:
+        return None, (
+            "Router output is shown as analysis evidence only in Auto/Unknown mode because current router holdout "
+            "results are not reliable enough for automatic task selection. Choose a content intent or task manually."
+        )
+
     router_status = router_result.get("router_status")
     if router_status != "enabled":
         return _recommend_for_intent(content_intent)
@@ -252,26 +264,26 @@ def _recommend_with_router(content_intent: str, router_result: dict[str, object]
         )
 
     if predicted_label == "music":
-        return EXTRACT_VOCALS, (
-            "Router predicts music with reasonable confidence. `extract_vocals` is the default suggestion; "
-            "`remove_vocals` is also valid when the goal is background/accompaniment extraction."
-        )
+        if content_intent == MUSIC_INTENT:
+            return EXTRACT_VOCALS, (
+                "Manual music intent is selected. Router also predicts music, so `extract_vocals` is suggested by "
+                "default; `remove_vocals` is also valid for background/accompaniment extraction."
+            )
+        return _recommend_for_intent(content_intent)
 
     if predicted_label == "speech_noise":
-        if content_intent == MUSIC_INTENT:
+        if content_intent == SPEECH_INTENT:
             return CLEAN_VOICE, (
-                "Router predicts noisy speech, while the declared intent is music. "
-                "`clean_voice` is still suggested because the router is the primary content signal, but verify the input."
+                "Manual speech/noisy speech intent is selected. Router also predicts noisy speech, so `clean_voice` "
+                "is suggested by default; `target_noise_suppression` is experimental for target-noise examples."
             )
-        return CLEAN_VOICE, (
-            "Router predicts noisy speech with reasonable confidence. `clean_voice` is the default recommendation; "
-            "`target_noise_suppression` is experimental for target-noise examples."
-        )
+        return _recommend_for_intent(content_intent)
 
     if predicted_label == "environment_noise":
-        return None, (
-            "Router predicts environment noise. The MVP does not auto-select a restoration task for standalone "
-            "environment noise."
+        task, intent_reason = _recommend_for_intent(content_intent)
+        return task, (
+            "Router predicts environment noise, so treat the recommendation cautiously. "
+            f"{intent_reason}"
         )
 
     return _recommend_for_intent(content_intent)

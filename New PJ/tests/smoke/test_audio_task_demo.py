@@ -125,7 +125,7 @@ def test_analyze_demo_input_unknown_intent_returns_no_recommendation(tmp_path: P
     assert "unknown" in markdown.lower()
 
 
-def test_analyze_demo_input_for_ui_updates_task_dropdown(tmp_path: Path) -> None:
+def test_auto_mode_with_router_music_keeps_current_task_dropdown(tmp_path: Path) -> None:
     input_path = tmp_path / "song.wav"
     input_path.write_bytes(b"audio")
     router_result = {
@@ -146,10 +146,11 @@ def test_analyze_demo_input_for_ui_updates_task_dropdown(tmp_path: Path) -> None
             current_task=CLEAN_VOICE,
         )
 
-    assert recommended_text == EXTRACT_VOCALS
-    assert dropdown_value == EXTRACT_VOCALS
+    assert recommended_text == "No automatic recommendation"
+    assert dropdown_value == CLEAN_VOICE
     assert ["duration_sec", "9.000000"] in table
     assert "Router predicted label:** `music`" in markdown
+    assert "analysis evidence only in Auto/Unknown mode" in markdown
 
 
 def test_analyze_demo_input_for_ui_keeps_current_task_when_no_recommendation(tmp_path: Path) -> None:
@@ -201,7 +202,7 @@ def test_analyze_demo_input_with_router_speech_noise_recommends_clean_voice(tmp_
     assert "target_noise_suppression` is experimental" in markdown
 
 
-def test_analyze_demo_input_with_router_music_recommends_extract_vocals(tmp_path: Path) -> None:
+def test_analyze_demo_input_with_router_music_and_manual_music_recommends_extract_vocals(tmp_path: Path) -> None:
     input_path = tmp_path / "song.wav"
     input_path.write_bytes(b"audio")
     router_result = {
@@ -216,7 +217,7 @@ def test_analyze_demo_input_with_router_music_recommends_extract_vocals(tmp_path
         patch("app.audio_task_demo._extract_feature_row", return_value=_feature_row()),
         patch("app.audio_task_demo._optional_router_result", return_value=router_result),
     ):
-        markdown, _table, recommended_task = analyze_demo_input(input_path, UNKNOWN_INTENT)
+        markdown, _table, recommended_task = analyze_demo_input(input_path, MUSIC_INTENT)
 
     assert recommended_task == EXTRACT_VOCALS
     assert "Router predicted label:** `music`" in markdown
@@ -224,7 +225,7 @@ def test_analyze_demo_input_with_router_music_recommends_extract_vocals(tmp_path
     assert "remove_vocals` is also valid" in markdown
 
 
-def test_analyze_demo_input_with_router_environment_noise_returns_no_recommendation(tmp_path: Path) -> None:
+def test_auto_mode_with_router_environment_noise_returns_no_recommendation(tmp_path: Path) -> None:
     input_path = tmp_path / "environment.wav"
     input_path.write_bytes(b"audio")
     router_result = {
@@ -239,11 +240,11 @@ def test_analyze_demo_input_with_router_environment_noise_returns_no_recommendat
         patch("app.audio_task_demo._extract_feature_row", return_value=_feature_row()),
         patch("app.audio_task_demo._optional_router_result", return_value=router_result),
     ):
-        markdown, _table, recommended_task = analyze_demo_input(input_path, SPEECH_INTENT)
+        markdown, _table, recommended_task = analyze_demo_input(input_path, AUTO_INTENT)
 
     assert recommended_task is None
     assert "Router predicted label:** `environment_noise`" in markdown
-    assert "does not auto-select" in markdown
+    assert "analysis evidence only in Auto/Unknown mode" in markdown
 
 
 def test_analyze_demo_input_router_failure_falls_back_safely(tmp_path: Path) -> None:
