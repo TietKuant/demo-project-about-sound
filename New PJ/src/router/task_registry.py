@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 
 CLEAN_VOICE = "clean_voice"
+TARGET_NOISE_SUPPRESSION = "target_noise_suppression"
 EXTRACT_VOCALS = "extract_vocals"
 REMOVE_VOCALS = "remove_vocals"
 
@@ -30,6 +31,14 @@ _TASK_DEFINITIONS: tuple[dict[str, object], ...] = (
         "engine": "deepfilternet",
         "output_labels": ["restored"],
         "input_kind": "audio_or_video",
+    },
+    {
+        "name": TARGET_NOISE_SUPPRESSION,
+        "display_name": "Target Noise Suppression (Experimental)",
+        "description": "Run a custom-trained baseline for speech with selected target noise classes.",
+        "engine": "target_noise_suppressor",
+        "output_labels": ["enhanced"],
+        "input_kind": "audio_only",
     },
     {
         "name": EXTRACT_VOCALS,

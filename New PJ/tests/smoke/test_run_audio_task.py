@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from scripts.run_audio_task import run_audio_task
 from src.api.contracts import DenoiseResult
-from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, REMOVE_VOCALS
+from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, REMOVE_VOCALS, TARGET_NOISE_SUPPRESSION
 
 
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:
@@ -137,3 +137,116 @@ def test_remove_vocals_calls_music_separation_with_task_name(tmp_path: Path) -> 
     assert rows[0]["engine"] == "demucs"
     assert rows[0]["status"] == "success"
     assert rows[0]["primary_output_path"].endswith("no_vocals.wav")
+
+
+def test_target_noise_suppression_calls_inference_and_writes_success_summary(tmp_path: Path) -> None:
+    input_path = tmp_path / "speech.wav"
+    output_root = tmp_path / "outputs"
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    input_path.write_bytes(b"audio")
+    checkpoint_path.write_bytes(b"checkpoint")
+    calls: list[dict[str, object]] = []
+
+    def mock_inference(**kwargs: object) -> dict[str, Path]:
+        calls.append(kwargs)
+        output_path = Path(kwargs["output_path"])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"enhanced")
+        return {"output": output_path, "summary": Path(kwargs["summary_path"])}
+
+    with patch("scripts.run_audio_task.run_pipeline") as pipeline_mock:
+        with patch("scripts.run_audio_task.run_music_separation") as music_mock:
+            with patch("scripts.run_audio_task._run_target_noise_suppression_inference", side_effect=mock_inference):
+                run_dir = run_audio_task(
+                    task=TARGET_NOISE_SUPPRESSION,
+                    input_path=input_path,
+                    output_root=output_root,
+                    target_noise_checkpoint=checkpoint_path,
+                )
+
+    pipeline_mock.assert_not_called()
+    music_mock.assert_not_called()
+    assert len(calls) == 1
+    assert calls[0]["checkpoint_path"] == checkpoint_path
+    assert calls[0]["input_path"] == input_path.resolve()
+    assert Path(calls[0]["output_path"]).name == "speech.target_noise_suppressed.wav"
+    assert Path(calls[0]["summary_path"]).name == "target_noise_suppressor_summary.json"
+    rows = _read_csv_rows(run_dir / "summary.csv")
+    assert rows[0]["task"] == TARGET_NOISE_SUPPRESSION
+    assert rows[0]["engine"] == "target_noise_suppressor"
+    assert rows[0]["status"] == "success"
+    assert rows[0]["primary_output_path"].endswith("speech.target_noise_suppressed.wav")
+
+
+def test_target_noise_suppression_missing_checkpoint_writes_failed_summary(tmp_path: Path) -> None:
+    input_path = tmp_path / "speech.wav"
+    input_path.write_bytes(b"audio")
+
+    with patch("scripts.run_audio_task._run_target_noise_suppression_inference") as inference_mock:
+        with patch.dict("scripts.run_audio_task.os.environ", {}, clear=True):
+            run_dir = run_audio_task(
+                task=TARGET_NOISE_SUPPRESSION,
+                input_path=input_path,
+                output_root=tmp_path / "outputs",
+            )
+
+    inference_mock.assert_not_called()
+    rows = _read_csv_rows(run_dir / "summary.csv")
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["engine"] == "target_noise_suppressor"
+    assert "--target-noise-checkpoint" in rows[0]["error"]
+    assert "TARGET_NOISE_SUPPRESSOR_CHECKPOINT" in rows[0]["error"]
+    assert rows[0]["primary_output_path"] == ""
+
+
+def test_target_noise_suppression_uses_checkpoint_from_environment(tmp_path: Path) -> None:
+    input_path = tmp_path / "speech.wav"
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    input_path.write_bytes(b"audio")
+    checkpoint_path.write_bytes(b"checkpoint")
+    calls: list[dict[str, object]] = []
+
+    def mock_inference(**kwargs: object) -> dict[str, Path]:
+        calls.append(kwargs)
+        output_path = Path(kwargs["output_path"])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"enhanced")
+        return {"output": output_path, "summary": Path(kwargs["summary_path"])}
+
+    with patch("scripts.run_audio_task._run_target_noise_suppression_inference", side_effect=mock_inference):
+        with patch.dict(
+            "scripts.run_audio_task.os.environ",
+            {"TARGET_NOISE_SUPPRESSOR_CHECKPOINT": str(checkpoint_path)},
+            clear=True,
+        ):
+            run_dir = run_audio_task(
+                task=TARGET_NOISE_SUPPRESSION,
+                input_path=input_path,
+                output_root=tmp_path / "outputs",
+            )
+
+    assert calls[0]["checkpoint_path"] == checkpoint_path
+    rows = _read_csv_rows(run_dir / "summary.csv")
+    assert rows[0]["status"] == "success"
+    assert rows[0]["engine"] == "target_noise_suppressor"
+
+
+def test_target_noise_suppression_rejects_video_without_inference(tmp_path: Path) -> None:
+    input_path = tmp_path / "speech.mov"
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    input_path.write_bytes(b"video")
+    checkpoint_path.write_bytes(b"checkpoint")
+
+    with patch("scripts.run_audio_task._run_target_noise_suppression_inference") as inference_mock:
+        run_dir = run_audio_task(
+            task=TARGET_NOISE_SUPPRESSION,
+            input_path=input_path,
+            output_root=tmp_path / "outputs",
+            target_noise_checkpoint=checkpoint_path,
+        )
+
+    inference_mock.assert_not_called()
+    rows = _read_csv_rows(run_dir / "summary.csv")
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["engine"] == "target_noise_suppressor"
+    assert rows[0]["error"] == "target_noise_suppression currently supports audio input only."

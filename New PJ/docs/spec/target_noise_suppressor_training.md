@@ -91,7 +91,7 @@ If a clean `--target` file is provided, the script also writes before/after comp
 - `model_output_l1`
 - `output_mse`
 
-This is a standalone inference script only. It is not integrated into the app UI or `scripts/run_audio_task.py` yet.
+The standalone inference script is also reused by the experimental unified runner integration. The task is exposed through the runner as `target_noise_suppression`, but it remains experimental and requires an explicit checkpoint path.
 
 ## Aggregate Evaluation
 
@@ -132,6 +132,32 @@ The evaluator also reports `error_power_improvement_db`, an auxiliary waveform d
 
 Positive values mean the model reduced squared error power relative to the mixed input. This is useful for diagnostics, but waveform L1 remains the primary baseline metric for this sprint.
 
+## Experimental Runner Integration
+
+The unified runner can run the experimental task:
+
+```text
+target_noise_suppression
+```
+
+The checkpoint must be supplied explicitly. Use either:
+
+```text
+--target-noise-checkpoint /path/to/checkpoint.pt
+```
+
+or:
+
+```text
+TARGET_NOISE_SUPPRESSOR_CHECKPOINT=/path/to/checkpoint.pt
+```
+
+The source code must not hardcode local checkpoint paths.
+
+This runner integration is audio-only for now. Video inputs fail clearly because this sprint does not add audio extraction/remuxing for the custom model.
+
+This task is experimental. It demonstrates a custom-trained target-noise baseline, not a final speech enhancement quality claim.
+
 ## Metrics
 
 Current metrics include:
@@ -149,13 +175,12 @@ This gives a simple before/after training signal, not a final speech-quality eva
 
 ## Current Scope
 
-This implementation adds a custom training baseline, a standalone inference script, and aggregate checkpoint evaluation.
+This implementation adds a custom training baseline, standalone inference, aggregate evaluation, and experimental unified-runner integration.
 
 It does not:
 
-- integrate the model into the app,
-- integrate the model into `scripts/run_audio_task.py`,
-- modify the Gradio UI,
+- claim final speech-enhancement quality,
+- support video input for the custom target-noise task,
 - train a final thesis-grade model,
 - commit checkpoints, generated audio, or datasets.
 
@@ -163,7 +188,7 @@ It does not:
 
 The next sprint can add:
 
-- a reusable engine adapter,
-- integration with `scripts/run_audio_task.py`,
+- a reusable engine adapter if the runner integration grows,
 - richer audio-quality metrics beyond waveform L1/MSE,
-- optional app UI integration after the standalone model path proves useful.
+- a trained ML router for task recommendation,
+- stronger app UI messaging around the experimental checkpoint requirement.

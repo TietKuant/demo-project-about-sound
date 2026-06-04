@@ -13,7 +13,7 @@ from app.audio_task_demo import (
     analyze_demo_input,
     run_demo_task,
 )
-from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, REMOVE_VOCALS
+from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, REMOVE_VOCALS, TARGET_NOISE_SUPPRESSION
 
 
 def _write_summary(run_dir: Path, *, task: str, primary_output_path: Path | None) -> None:
@@ -36,7 +36,11 @@ def _write_summary(run_dir: Path, *, task: str, primary_output_path: Path | None
             {
                 "run_id": "mock-run",
                 "task": task,
-                "engine": "deepfilternet" if task == CLEAN_VOICE else "demucs",
+                "engine": "deepfilternet"
+                if task == CLEAN_VOICE
+                else "target_noise_suppressor"
+                if task == TARGET_NOISE_SUPPRESSION
+                else "demucs",
                 "input_path": "",
                 "input_type": "audio",
                 "status": "success",
@@ -196,6 +200,35 @@ def test_demo_remove_vocals_passes_through(tmp_path: Path) -> None:
     assert downloadable.endswith("no_vocals.wav")
 
 
+def test_demo_target_noise_suppression_allows_speech_intent(tmp_path: Path) -> None:
+    input_path = tmp_path / "speech.wav"
+    output_root = tmp_path / "demo-runs"
+    input_path.write_bytes(b"audio")
+    calls: list[dict[str, object]] = []
+
+    def mock_run_audio_task(**kwargs: object) -> Path:
+        calls.append(kwargs)
+        run_dir = output_root / "target_noise_suppression" / "mock-run"
+        primary_output = run_dir / "speech.target_noise_suppressed.wav"
+        primary_output.parent.mkdir(parents=True, exist_ok=True)
+        primary_output.write_bytes(b"enhanced")
+        _write_summary(run_dir, task=TARGET_NOISE_SUPPRESSION, primary_output_path=primary_output)
+        return run_dir
+
+    with patch("app.audio_task_demo.run_audio_task", side_effect=mock_run_audio_task):
+        markdown, table, downloadable = run_demo_task(
+            input_path,
+            TARGET_NOISE_SUPPRESSION,
+            content_intent=SPEECH_INTENT,
+            output_root=output_root,
+        )
+
+    assert calls[0]["task"] == TARGET_NOISE_SUPPRESSION
+    assert "success" in markdown
+    assert ["task", TARGET_NOISE_SUPPRESSION] in table
+    assert downloadable.endswith("speech.target_noise_suppressed.wav")
+
+
 def test_demo_blocks_speech_intent_with_extract_vocals(tmp_path: Path) -> None:
     input_path = tmp_path / "speech.wav"
     input_path.write_bytes(b"audio")
@@ -215,6 +248,51 @@ def test_demo_blocks_speech_intent_with_extract_vocals(tmp_path: Path) -> None:
     assert downloadable is None
 
 
+def test_demo_blocks_music_intent_with_target_noise_suppression(tmp_path: Path) -> None:
+    input_path = tmp_path / "music.wav"
+    input_path.write_bytes(b"audio")
+
+    with patch("app.audio_task_demo.run_audio_task") as run_mock:
+        markdown, table, downloadable = run_demo_task(
+            input_path,
+            TARGET_NOISE_SUPPRESSION,
+            content_intent=MUSIC_INTENT,
+            output_root=tmp_path / "runs",
+        )
+
+    run_mock.assert_not_called()
+    assert "Blocked" in markdown
+    assert "not intended for music input" in markdown
+    assert table == []
+    assert downloadable is None
+
+
+def test_demo_unknown_intent_allows_target_noise_suppression_with_caution(tmp_path: Path) -> None:
+    input_path = tmp_path / "unknown.wav"
+    output_root = tmp_path / "demo-runs"
+    input_path.write_bytes(b"audio")
+
+    def mock_run_audio_task(**kwargs: object) -> Path:
+        run_dir = output_root / "target_noise_suppression" / "mock-run"
+        primary_output = run_dir / "unknown.target_noise_suppressed.wav"
+        primary_output.parent.mkdir(parents=True, exist_ok=True)
+        primary_output.write_bytes(b"enhanced")
+        _write_summary(run_dir, task=TARGET_NOISE_SUPPRESSION, primary_output_path=primary_output)
+        return run_dir
+
+    with patch("app.audio_task_demo.run_audio_task", side_effect=mock_run_audio_task):
+        markdown, table, downloadable = run_demo_task(
+            input_path,
+            TARGET_NOISE_SUPPRESSION,
+            content_intent=UNKNOWN_INTENT,
+            output_root=output_root,
+        )
+
+    assert "Caution" in markdown
+    assert ["task", TARGET_NOISE_SUPPRESSION] in table
+    assert downloadable.endswith("unknown.target_noise_suppressed.wav")
+
+
 def test_demo_blocks_speech_intent_with_remove_vocals(tmp_path: Path) -> None:
     input_path = tmp_path / "speech.wav"
     input_path.write_bytes(b"audio")
@@ -232,6 +310,7 @@ def test_demo_blocks_speech_intent_with_remove_vocals(tmp_path: Path) -> None:
     assert "Speech/noisy speech" in markdown
     assert table == []
     assert downloadable is None
+
 
 def test_demo_missing_file_input_returns_clear_error(tmp_path: Path) -> None:
     missing_input = tmp_path / "missing.wav"

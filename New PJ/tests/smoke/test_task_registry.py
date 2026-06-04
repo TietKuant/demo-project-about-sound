@@ -8,6 +8,7 @@ from src.router.task_registry import (
     CLEAN_VOICE,
     EXTRACT_VOCALS,
     REMOVE_VOCALS,
+    TARGET_NOISE_SUPPRESSION,
     get_task_spec,
     is_supported_task,
     list_supported_tasks,
@@ -19,8 +20,11 @@ class TaskRegistrySmokeTests(unittest.TestCase):
         tasks = list_supported_tasks()
         names = [task.name for task in tasks]
 
-        self.assertEqual(names, [CLEAN_VOICE, EXTRACT_VOCALS, REMOVE_VOCALS])
-        self.assertEqual({task.name for task in tasks}, {CLEAN_VOICE, EXTRACT_VOCALS, REMOVE_VOCALS})
+        self.assertEqual(names, [CLEAN_VOICE, TARGET_NOISE_SUPPRESSION, EXTRACT_VOCALS, REMOVE_VOCALS])
+        self.assertEqual(
+            {task.name for task in tasks},
+            {CLEAN_VOICE, TARGET_NOISE_SUPPRESSION, EXTRACT_VOCALS, REMOVE_VOCALS},
+        )
 
     def test_get_task_spec_returns_clean_voice_metadata(self) -> None:
         task = get_task_spec(CLEAN_VOICE)
@@ -29,6 +33,14 @@ class TaskRegistrySmokeTests(unittest.TestCase):
         self.assertEqual(task.engine, "deepfilternet")
         self.assertEqual(task.output_labels, ["restored"])
         self.assertEqual(task.input_kind, "audio_or_video")
+
+    def test_get_task_spec_returns_target_noise_metadata(self) -> None:
+        task = get_task_spec(TARGET_NOISE_SUPPRESSION)
+
+        self.assertEqual(task.name, TARGET_NOISE_SUPPRESSION)
+        self.assertEqual(task.engine, "target_noise_suppressor")
+        self.assertEqual(task.output_labels, ["enhanced"])
+        self.assertEqual(task.input_kind, "audio_only")
 
     def test_unsupported_task_raises_value_error(self) -> None:
         self.assertFalse(is_supported_task("transcribe_audio"))

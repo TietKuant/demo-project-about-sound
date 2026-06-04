@@ -13,7 +13,13 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.extract_audio_features import extract_audio_features
 from scripts.run_audio_task import run_audio_task
-from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, REMOVE_VOCALS, list_supported_tasks
+from src.router.task_registry import (
+    CLEAN_VOICE,
+    EXTRACT_VOCALS,
+    REMOVE_VOCALS,
+    TARGET_NOISE_SUPPRESSION,
+    list_supported_tasks,
+)
 
 
 DEFAULT_OUTPUT_ROOT = Path("outputs/demo-runs")
@@ -194,6 +200,11 @@ def _intent_run_warning(content_intent: str, task: str) -> tuple[bool, str]:
         return False, (
             "### Caution\n"
             "Content intent is music/video with vocals. `clean_voice` can run, but it is intended for speech cleanup."
+        )
+    if content_intent == MUSIC_INTENT and task == TARGET_NOISE_SUPPRESSION:
+        return True, (
+            "### Blocked\n"
+            "`target_noise_suppression` is an experimental speech/noise baseline and is not intended for music input."
         )
     if content_intent == UNKNOWN_INTENT:
         return False, "### Caution\nContent intent is unknown. The selected task will run without automatic validation."

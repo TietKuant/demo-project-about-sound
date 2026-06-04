@@ -6,6 +6,7 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -18,7 +19,14 @@ from scripts.run_music_separation import run_music_separation
 from src.api.contracts import DenoiseRequest
 from src.io.paths import derive_output_mode, infer_input_type
 from src.pipeline.run_pipeline import run_pipeline
-from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, REMOVE_VOCALS, get_task_spec, list_supported_tasks
+from src.router.task_registry import (
+    CLEAN_VOICE,
+    EXTRACT_VOCALS,
+    REMOVE_VOCALS,
+    TARGET_NOISE_SUPPRESSION,
+    get_task_spec,
+    list_supported_tasks,
+)
 
 
 FIELDNAMES = [
@@ -47,6 +55,38 @@ def _read_music_summary(run_dir: Path) -> dict[str, str]:
     with summary_path.open(newline="", encoding="utf-8") as csv_file:
         rows = list(csv.DictReader(csv_file))
     return rows[0] if rows else {}
+
+
+def _resolve_target_noise_checkpoint(target_noise_checkpoint: Path | None) -> Path:
+    checkpoint = target_noise_checkpoint
+    if checkpoint is None:
+        env_value = os.getenv("TARGET_NOISE_SUPPRESSOR_CHECKPOINT")
+        checkpoint = Path(env_value) if env_value else None
+    if checkpoint is None:
+        raise ValueError(
+            "target_noise_suppression requires --target-noise-checkpoint "
+            "or TARGET_NOISE_SUPPRESSOR_CHECKPOINT."
+        )
+    return Path(checkpoint).expanduser()
+
+
+def _run_target_noise_suppression_inference(
+    *,
+    checkpoint_path: Path,
+    input_path: Path,
+    output_path: Path,
+    summary_path: Path,
+    device: str,
+) -> dict[str, Path]:
+    from scripts.run_target_noise_suppressor import run_target_noise_suppressor
+
+    return run_target_noise_suppressor(
+        checkpoint_path=checkpoint_path,
+        input_path=input_path,
+        output_path=output_path,
+        summary_path=summary_path,
+        device=device,
+    )
 
 
 def _summary_row(
@@ -84,6 +124,7 @@ def run_audio_task(
     model: str = "htdemucs",
     device: str = "cpu",
     jobs: int = 1,
+    target_noise_checkpoint: Path | None = None,
 ) -> Path:
     """Run one supported MVP task and write summary artifacts."""
     task_spec = get_task_spec(task)
@@ -128,6 +169,21 @@ def run_audio_task(
             status = music_summary.get("status", "failed")
             primary_output_path = music_summary.get("primary_output_path", "")
             error = music_summary.get("error", "")
+        elif task == TARGET_NOISE_SUPPRESSION:
+            if input_type == "video":
+                raise ValueError("target_noise_suppression currently supports audio input only.")
+            checkpoint = _resolve_target_noise_checkpoint(target_noise_checkpoint)
+            enhanced_path = run_dir / f"{source.stem}.target_noise_suppressed.wav"
+            inference_summary_path = run_dir / "target_noise_suppressor_summary.json"
+            inference_paths = _run_target_noise_suppression_inference(
+                checkpoint_path=checkpoint,
+                input_path=source,
+                output_path=enhanced_path,
+                summary_path=inference_summary_path,
+                device=device,
+            )
+            status = "success"
+            primary_output_path = str(inference_paths["output"])
         else:
             error = f"Unsupported task: {task}"
     except Exception as exc:
@@ -165,6 +221,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default="htdemucs")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--jobs", default=1, type=int)
+    parser.add_argument("--target-noise-checkpoint", default=None, type=Path)
     return parser
 
 
@@ -181,6 +238,7 @@ def main() -> int:
             model=args.model,
             device=args.device,
             jobs=args.jobs,
+            target_noise_checkpoint=args.target_noise_checkpoint,
         )
         print(f"Wrote audio task run: {run_dir}")
         return 0
