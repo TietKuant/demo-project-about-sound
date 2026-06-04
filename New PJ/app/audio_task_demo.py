@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -37,6 +38,8 @@ UNKNOWN_INTENT = "Unknown / not sure"
 CONTENT_INTENTS = [SPEECH_INTENT, MUSIC_INTENT, UNKNOWN_INTENT]
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 MUSIC_TASKS = {EXTRACT_VOCALS, REMOVE_VOCALS}
+ROUTER_CHECKPOINT_ENV_VAR = "AUDIO_ROUTER_CHECKPOINT"
+ROUTER_CONFIDENCE_THRESHOLD = 0.60
 
 
 def _read_summary(run_dir: Path) -> dict[str, str]:
@@ -152,6 +155,104 @@ def _recommend_for_intent(content_intent: str) -> tuple[str | None, str]:
     return None, "The content intent is unknown, so the demo does not auto-select a task."
 
 
+def _optional_router_result(input_path: Path) -> dict[str, object]:
+    checkpoint_value = os.environ.get(ROUTER_CHECKPOINT_ENV_VAR, "").strip()
+    if not checkpoint_value:
+        return {
+            "router_status": "disabled",
+            "predicted_label": "",
+            "confidence": None,
+            "probabilities": {},
+            "error": f"{ROUTER_CHECKPOINT_ENV_VAR} is not set.",
+        }
+
+    checkpoint_path = Path(checkpoint_value).expanduser()
+    if not checkpoint_path.exists():
+        return {
+            "router_status": "disabled",
+            "predicted_label": "",
+            "confidence": None,
+            "probabilities": {},
+            "error": f"Router checkpoint not found: {checkpoint_path}",
+        }
+
+    try:
+        from scripts.run_audio_router import run_audio_router
+
+        summary = run_audio_router(checkpoint_path=checkpoint_path, input_path=input_path)
+        return {
+            "router_status": "enabled",
+            "predicted_label": summary.get("predicted_label", ""),
+            "confidence": summary.get("confidence"),
+            "probabilities": summary.get("probabilities", {}),
+            "error": "",
+        }
+    except Exception as exc:
+        return {
+            "router_status": "failed",
+            "predicted_label": "",
+            "confidence": None,
+            "probabilities": {},
+            "error": str(exc),
+        }
+
+
+def _probability_summary(probabilities: object) -> str:
+    if not isinstance(probabilities, dict) or not probabilities:
+        return "n/a"
+    parts = []
+    for label, value in sorted(probabilities.items()):
+        try:
+            parts.append(f"{label}={float(value):.3f}")
+        except (TypeError, ValueError):
+            parts.append(f"{label}={value}")
+    return ", ".join(parts)
+
+
+def _recommend_with_router(content_intent: str, router_result: dict[str, object]) -> tuple[str | None, str]:
+    router_status = router_result.get("router_status")
+    if router_status != "enabled":
+        return _recommend_for_intent(content_intent)
+
+    predicted_label = str(router_result.get("predicted_label", ""))
+    confidence_raw = router_result.get("confidence")
+    confidence = confidence_raw if isinstance(confidence_raw, (int, float)) else 0.0
+
+    if confidence < ROUTER_CONFIDENCE_THRESHOLD:
+        fallback_task, fallback_reason = _recommend_for_intent(content_intent)
+        return fallback_task, (
+            f"Router confidence `{confidence:.3f}` is below `{ROUTER_CONFIDENCE_THRESHOLD:.2f}`, "
+            f"so the demo falls back to content intent. {fallback_reason}"
+        )
+
+    if predicted_label == "music":
+        return EXTRACT_VOCALS, "Router predicts music with reasonable confidence; user intent should still be checked."
+
+    if predicted_label == "speech_noise":
+        if content_intent == SPEECH_INTENT:
+            return CLEAN_VOICE, (
+                "Router predicts noisy speech and the declared intent is speech/noisy speech. "
+                "`clean_voice` remains the default recommendation; `target_noise_suppression` is experimental."
+            )
+        if content_intent == UNKNOWN_INTENT:
+            return CLEAN_VOICE, (
+                "Router predicts noisy speech, but content intent is unknown. "
+                "`clean_voice` is suggested with caution."
+            )
+        return None, (
+            "Router predicts noisy speech but the declared intent is music. "
+            "No automatic task is selected because router output is content type, not final user intent."
+        )
+
+    if predicted_label == "environment_noise":
+        return None, (
+            "Router predicts environment noise. The MVP does not auto-select a restoration task for standalone "
+            "environment noise."
+        )
+
+    return _recommend_for_intent(content_intent)
+
+
 def analyze_demo_input(
     file_path: str | Path | None,
     content_intent: str = UNKNOWN_INTENT,
@@ -169,21 +270,31 @@ def analyze_demo_input(
     except Exception as exc:
         return f"### Error\nAudio feature extraction failed: `{exc}`", [], None
 
-    recommended_task, reason = _recommend_for_intent(content_intent)
+    router_result = _optional_router_result(source)
+    recommended_task, reason = _recommend_with_router(content_intent, router_result)
     profile_notes = _profile_notes(row)
     status = row.get("status", "")
     error = row.get("error", "")
     recommendation_text = f"`{recommended_task}`" if recommended_task else "No automatic recommendation"
+    router_confidence = router_result.get("confidence")
+    confidence_text = f"{float(router_confidence):.3f}" if isinstance(router_confidence, (int, float)) else "n/a"
 
     lines = [
         "### Preflight analysis",
         f"- **Feature extraction status:** `{status}`",
+        f"- **Router status:** `{router_result.get('router_status', 'disabled')}`",
+        f"- **Router predicted label:** `{router_result.get('predicted_label', '') or 'n/a'}`",
+        f"- **Router confidence:** `{confidence_text}`",
+        f"- **Router probabilities:** `{_probability_summary(router_result.get('probabilities'))}`",
         f"- **Content intent:** `{content_intent}`",
         f"- **Profile notes:** {' '.join(profile_notes)}",
         f"- **Recommended task:** {recommendation_text}",
         f"- **Reason:** {reason}",
-        "- **Limitation:** this is a feature-based recommendation aid, not a deployed ML speech/music classifier.",
+        "- **Limitation:** routing is a baseline aid. If a router checkpoint is configured, the demo uses ML content-type prediction; otherwise it falls back to feature/intent rules. It does not determine final user intent automatically.",
     ]
+    router_error = str(router_result.get("error", ""))
+    if router_error:
+        lines.append(f"- **Router note:** `{router_error}`")
     if error:
         lines.append(f"- **Feature extraction error:** `{error}`")
     return "\n".join(lines), _feature_table(row), recommended_task

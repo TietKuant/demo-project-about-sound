@@ -6,14 +6,22 @@ import csv
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from app.audio_task_demo import (
     MUSIC_INTENT,
+    ROUTER_CHECKPOINT_ENV_VAR,
     SPEECH_INTENT,
     UNKNOWN_INTENT,
     analyze_demo_input,
     run_demo_task,
 )
 from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, REMOVE_VOCALS, TARGET_NOISE_SUPPRESSION
+
+
+@pytest.fixture(autouse=True)
+def _disable_router_checkpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(ROUTER_CHECKPOINT_ENV_VAR, raising=False)
 
 
 def _write_summary(run_dir: Path, *, task: str, primary_output_path: Path | None) -> None:
@@ -82,7 +90,9 @@ def test_analyze_demo_input_recommends_clean_voice_for_speech_intent(tmp_path: P
     assert recommended_task == CLEAN_VOICE
     assert ["duration_sec", "9.000000"] in table
     assert ["rms_energy", "0.0500000000"] in table
-    assert "feature-based recommendation aid" in markdown
+    assert "Router status:** `disabled`" in markdown
+    assert "routing is a baseline aid" in markdown
+    assert "falls back to feature/intent rules" in markdown
 
 
 def test_analyze_demo_input_recommends_extract_vocals_for_music_intent(tmp_path: Path) -> None:
@@ -111,6 +121,96 @@ def test_analyze_demo_input_unknown_intent_returns_no_recommendation(tmp_path: P
     assert ["zero_crossing_rate", "0.0200000000"] in table
     assert "No automatic recommendation" in markdown
     assert "unknown" in markdown.lower()
+
+
+def test_analyze_demo_input_with_router_speech_noise_recommends_clean_voice(tmp_path: Path) -> None:
+    input_path = tmp_path / "speech.wav"
+    input_path.write_bytes(b"audio")
+    router_result = {
+        "router_status": "enabled",
+        "predicted_label": "speech_noise",
+        "confidence": 0.82,
+        "probabilities": {"speech_noise": 0.82, "music": 0.10, "environment_noise": 0.08},
+        "error": "",
+    }
+
+    with (
+        patch("app.audio_task_demo._extract_feature_row", return_value=_feature_row()),
+        patch("app.audio_task_demo._optional_router_result", return_value=router_result),
+    ):
+        markdown, _table, recommended_task = analyze_demo_input(input_path, SPEECH_INTENT)
+
+    assert recommended_task == CLEAN_VOICE
+    assert "Router status:** `enabled`" in markdown
+    assert "Router predicted label:** `speech_noise`" in markdown
+    assert "0.820" in markdown
+    assert "target_noise_suppression` is experimental" in markdown
+
+
+def test_analyze_demo_input_with_router_music_recommends_extract_vocals(tmp_path: Path) -> None:
+    input_path = tmp_path / "song.wav"
+    input_path.write_bytes(b"audio")
+    router_result = {
+        "router_status": "enabled",
+        "predicted_label": "music",
+        "confidence": 0.77,
+        "probabilities": {"speech_noise": 0.11, "music": 0.77, "environment_noise": 0.12},
+        "error": "",
+    }
+
+    with (
+        patch("app.audio_task_demo._extract_feature_row", return_value=_feature_row()),
+        patch("app.audio_task_demo._optional_router_result", return_value=router_result),
+    ):
+        markdown, _table, recommended_task = analyze_demo_input(input_path, UNKNOWN_INTENT)
+
+    assert recommended_task == EXTRACT_VOCALS
+    assert "Router predicted label:** `music`" in markdown
+    assert "music=0.770" in markdown
+
+
+def test_analyze_demo_input_with_router_environment_noise_returns_no_recommendation(tmp_path: Path) -> None:
+    input_path = tmp_path / "environment.wav"
+    input_path.write_bytes(b"audio")
+    router_result = {
+        "router_status": "enabled",
+        "predicted_label": "environment_noise",
+        "confidence": 0.91,
+        "probabilities": {"speech_noise": 0.03, "music": 0.06, "environment_noise": 0.91},
+        "error": "",
+    }
+
+    with (
+        patch("app.audio_task_demo._extract_feature_row", return_value=_feature_row()),
+        patch("app.audio_task_demo._optional_router_result", return_value=router_result),
+    ):
+        markdown, _table, recommended_task = analyze_demo_input(input_path, SPEECH_INTENT)
+
+    assert recommended_task is None
+    assert "Router predicted label:** `environment_noise`" in markdown
+    assert "does not auto-select" in markdown
+
+
+def test_analyze_demo_input_router_failure_falls_back_safely(tmp_path: Path) -> None:
+    input_path = tmp_path / "song.wav"
+    input_path.write_bytes(b"audio")
+    router_result = {
+        "router_status": "failed",
+        "predicted_label": "",
+        "confidence": None,
+        "probabilities": {},
+        "error": "mock router failure",
+    }
+
+    with (
+        patch("app.audio_task_demo._extract_feature_row", return_value=_feature_row()),
+        patch("app.audio_task_demo._optional_router_result", return_value=router_result),
+    ):
+        markdown, _table, recommended_task = analyze_demo_input(input_path, MUSIC_INTENT)
+
+    assert recommended_task == EXTRACT_VOCALS
+    assert "Router status:** `failed`" in markdown
+    assert "mock router failure" in markdown
 
 
 def test_demo_clean_voice_passes_through_and_returns_primary_output(tmp_path: Path) -> None:
