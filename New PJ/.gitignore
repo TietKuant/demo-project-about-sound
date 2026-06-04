@@ -67,3 +67,6 @@ data/manifests/*.local.csv
 
 # Vietnamese real sample runtime outputs
 outputs/vietnamese-real-runs/
+
+# Unified task runner outputs
+outputs/audio-task-runs/
