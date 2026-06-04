@@ -100,9 +100,10 @@ def test_clean_voice_row_calls_run_pipeline_and_writes_summary(tmp_path: Path) -
             engine_name="deepfilternet",
         )
 
-    with patch("scripts.run_vietnamese_real_sample_suite.run_pipeline", side_effect=mock_run_pipeline):
-        with patch("scripts.run_vietnamese_real_sample_suite.run_music_separation") as music_mock:
-            result_root = run_vietnamese_real_sample_suite(manifest_path=manifest_path, output_root=output_root)
+    with patch("scripts.run_vietnamese_real_sample_suite._audio_duration_sec", return_value=2.0):
+        with patch("scripts.run_vietnamese_real_sample_suite.run_pipeline", side_effect=mock_run_pipeline):
+            with patch("scripts.run_vietnamese_real_sample_suite.run_music_separation") as music_mock:
+                result_root = run_vietnamese_real_sample_suite(manifest_path=manifest_path, output_root=output_root)
 
     csv_rows = _read_csv_rows(result_root / "summary.csv")
     json_rows = json.loads((result_root / "summary.json").read_text(encoding="utf-8"))
@@ -114,6 +115,8 @@ def test_clean_voice_row_calls_run_pipeline_and_writes_summary(tmp_path: Path) -
     assert csv_rows[0]["sample_id"] == "vi_speech_001"
     assert csv_rows[0]["expected_task"] == CLEAN_VOICE
     assert csv_rows[0]["status"] == "success"
+    assert csv_rows[0]["audio_duration_sec"] == "2.000000"
+    assert csv_rows[0]["rtf"]
     assert csv_rows[0]["primary_output_path"].endswith("speech.denoised.wav")
 
 
@@ -141,18 +144,22 @@ def test_vocal_rows_call_music_separation_with_expected_task_names(tmp_path: Pat
         _write_music_summary(run_dir, task_name, run_dir / primary_name)
         return run_dir
 
-    with patch("scripts.run_vietnamese_real_sample_suite.run_pipeline") as pipeline_mock:
-        with patch("scripts.run_vietnamese_real_sample_suite.run_music_separation", side_effect=mock_music_separation):
-            result_root = run_vietnamese_real_sample_suite(
-                manifest_path=manifest_path,
-                output_root=output_root,
-                demucs_python=Path("/isolated/bin/python"),
-            )
+    with patch("scripts.run_vietnamese_real_sample_suite._audio_duration_sec", return_value=4.0):
+        with patch("scripts.run_vietnamese_real_sample_suite.run_pipeline") as pipeline_mock:
+            with patch("scripts.run_vietnamese_real_sample_suite.run_music_separation", side_effect=mock_music_separation):
+                result_root = run_vietnamese_real_sample_suite(
+                    manifest_path=manifest_path,
+                    output_root=output_root,
+                    demucs_python=Path("/isolated/bin/python"),
+                )
 
     pipeline_mock.assert_not_called()
     assert task_calls == [EXTRACT_VOCALS, REMOVE_VOCALS]
     rows = _read_csv_rows(result_root / "summary.csv")
     assert [row["expected_task"] for row in rows] == [EXTRACT_VOCALS, REMOVE_VOCALS]
+    assert [row["audio_duration_sec"] for row in rows] == ["4.000000", "4.000000"]
+    assert rows[0]["rtf"]
+    assert rows[1]["rtf"]
     assert rows[0]["primary_output_path"].endswith("vocals.wav")
     assert rows[1]["primary_output_path"].endswith("no_vocals.wav")
 
@@ -172,6 +179,8 @@ def test_missing_file_with_skip_missing_records_skipped(tmp_path: Path) -> None:
     pipeline_mock.assert_not_called()
     row = _read_csv_rows(result_root / "summary.csv")[0]
     assert row["status"] == "skipped"
+    assert row["audio_duration_sec"] == ""
+    assert row["rtf"] == ""
     assert "Input file not found" in row["error"]
 
 
@@ -190,4 +199,33 @@ def test_missing_file_without_skip_missing_records_failed(tmp_path: Path) -> Non
     pipeline_mock.assert_not_called()
     row = _read_csv_rows(result_root / "summary.csv")[0]
     assert row["status"] == "failed"
+    assert row["audio_duration_sec"] == ""
+    assert row["rtf"] == ""
     assert "Input file not found" in row["error"]
+
+
+def test_duration_failure_does_not_fail_processing(tmp_path: Path) -> None:
+    input_path = tmp_path / "speech.wav"
+    input_path.write_bytes(b"audio")
+    manifest_path = tmp_path / "manifest.csv"
+    output_root = tmp_path / "outputs"
+    _write_manifest(manifest_path, [_manifest_row("vi_speech_002", input_path, CLEAN_VOICE)])
+
+    def mock_run_pipeline(request: object) -> DenoiseResult:
+        output_path = Path(getattr(request, "output_dir")) / "speech.denoised.wav"
+        return DenoiseResult(
+            status="completed_real",
+            final_output_path=output_path,
+            intermediate_audio_path=None,
+            engine_name="deepfilternet",
+        )
+
+    with patch("scripts.run_vietnamese_real_sample_suite._audio_duration_sec", return_value=None):
+        with patch("scripts.run_vietnamese_real_sample_suite.run_pipeline", side_effect=mock_run_pipeline):
+            result_root = run_vietnamese_real_sample_suite(manifest_path=manifest_path, output_root=output_root)
+
+    row = _read_csv_rows(result_root / "summary.csv")[0]
+    assert row["status"] == "success"
+    assert row["audio_duration_sec"] == ""
+    assert row["rtf"] == ""
+    assert row["primary_output_path"].endswith("speech.denoised.wav")

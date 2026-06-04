@@ -15,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.run_music_separation import run_music_separation
 from src.api.contracts import DenoiseRequest
+from src.eval.metrics import load_mono_audio
 from src.io.paths import derive_output_mode, infer_input_type
 from src.pipeline.run_pipeline import run_pipeline
 from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, REMOVE_VOCALS, get_task_spec
@@ -41,6 +42,8 @@ FIELDNAMES = [
     "status",
     "output_root",
     "runtime_sec",
+    "audio_duration_sec",
+    "rtf",
     "primary_output_path",
     "error",
     "notes",
@@ -67,6 +70,26 @@ def _resolve_input_path(value: str) -> Path:
     return path if path.is_absolute() else (Path.cwd() / path)
 
 
+def _audio_duration_sec(input_path: Path) -> float | None:
+    try:
+        audio, sample_rate = load_mono_audio(input_path)
+    except Exception:
+        return None
+    if sample_rate <= 0:
+        return None
+    return len(audio) / sample_rate
+
+
+def _format_duration(duration_sec: float | None) -> str:
+    return "" if duration_sec is None else f"{duration_sec:.6f}"
+
+
+def _format_rtf(runtime_sec: float, duration_sec: float | None) -> str:
+    if duration_sec is None or duration_sec <= 0:
+        return ""
+    return f"{runtime_sec / duration_sec:.6f}"
+
+
 def _empty_row(manifest_row: dict[str, str], input_path: Path) -> dict[str, str]:
     return {
         "sample_id": manifest_row["sample_id"],
@@ -78,6 +101,8 @@ def _empty_row(manifest_row: dict[str, str], input_path: Path) -> dict[str, str]
         "status": "failed",
         "output_root": "",
         "runtime_sec": "",
+        "audio_duration_sec": "",
+        "rtf": "",
         "primary_output_path": "",
         "error": "",
         "notes": manifest_row["notes"],
@@ -140,6 +165,8 @@ def run_vietnamese_real_sample_suite(
             summary_rows.append(summary_row)
             continue
 
+        duration_sec = _audio_duration_sec(input_path)
+        summary_row["audio_duration_sec"] = _format_duration(duration_sec)
         started_at = time.perf_counter()
         try:
             if expected_task == CLEAN_VOICE:
@@ -151,6 +178,7 @@ def run_vietnamese_real_sample_suite(
                         "status": "success" if primary_output_path is not None else "failed",
                         "output_root": str(sample_output_root),
                         "runtime_sec": f"{runtime_sec:.6f}",
+                        "rtf": _format_rtf(runtime_sec, duration_sec),
                         "primary_output_path": "" if primary_output_path is None else str(primary_output_path),
                         "error": "" if primary_output_path is not None else "Pipeline did not return a final output path.",
                     }
@@ -169,6 +197,7 @@ def run_vietnamese_real_sample_suite(
                         "status": music_summary.get("status", "failed"),
                         "output_root": str(task_run_dir),
                         "runtime_sec": f"{runtime_sec:.6f}",
+                        "rtf": _format_rtf(runtime_sec, duration_sec),
                         "primary_output_path": music_summary.get("primary_output_path", ""),
                         "error": music_summary.get("error", ""),
                     }
@@ -180,6 +209,7 @@ def run_vietnamese_real_sample_suite(
                     "status": "failed",
                     "output_root": str(sample_output_root),
                     "runtime_sec": f"{runtime_sec:.6f}",
+                    "rtf": _format_rtf(runtime_sec, duration_sec),
                     "error": str(exc),
                 }
             )
