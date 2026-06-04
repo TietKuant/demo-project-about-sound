@@ -34,12 +34,38 @@ FEATURE_FIELDS = [
 ]
 SPEECH_INTENT = "Speech / noisy speech"
 MUSIC_INTENT = "Music or music video with vocals"
+AUTO_INTENT = "Auto detect / not sure"
 UNKNOWN_INTENT = "Unknown / not sure"
-CONTENT_INTENTS = [SPEECH_INTENT, MUSIC_INTENT, UNKNOWN_INTENT]
+CONTENT_INTENTS = [AUTO_INTENT, SPEECH_INTENT, MUSIC_INTENT, UNKNOWN_INTENT]
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 MUSIC_TASKS = {EXTRACT_VOCALS, REMOVE_VOCALS}
 ROUTER_CHECKPOINT_ENV_VAR = "AUDIO_ROUTER_CHECKPOINT"
-ROUTER_CONFIDENCE_THRESHOLD = 0.60
+ROUTER_CONFIDENCE_THRESHOLD = 0.55
+DEMO_CSS = """
+.gradio-container {
+  max-width: 1120px !important;
+  margin: 0 auto !important;
+}
+.demo-hero h1 {
+  margin-bottom: 0.25rem;
+}
+.demo-subtitle {
+  color: #475569;
+  font-size: 1rem;
+  margin-top: 0;
+}
+.demo-card {
+  border: 1px solid #d9e2ec;
+  border-radius: 8px;
+  padding: 16px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.demo-card h2,
+.demo-card h3 {
+  margin-top: 0;
+}
+"""
 
 
 def _read_summary(run_dir: Path) -> dict[str, str]:
@@ -152,7 +178,7 @@ def _recommend_for_intent(content_intent: str) -> tuple[str | None, str]:
         return CLEAN_VOICE, "The declared content intent is speech/noisy speech."
     if content_intent == MUSIC_INTENT:
         return EXTRACT_VOCALS, "The declared content intent is music or a music video with vocals."
-    return None, "The content intent is unknown, so the demo does not auto-select a task."
+    return None, "The content intent is not specified, so the demo does not auto-select a task."
 
 
 def _optional_router_result(input_path: Path) -> dict[str, object]:
@@ -226,22 +252,20 @@ def _recommend_with_router(content_intent: str, router_result: dict[str, object]
         )
 
     if predicted_label == "music":
-        return EXTRACT_VOCALS, "Router predicts music with reasonable confidence; user intent should still be checked."
+        return EXTRACT_VOCALS, (
+            "Router predicts music with reasonable confidence. `extract_vocals` is the default suggestion; "
+            "`remove_vocals` is also valid when the goal is background/accompaniment extraction."
+        )
 
     if predicted_label == "speech_noise":
-        if content_intent == SPEECH_INTENT:
+        if content_intent == MUSIC_INTENT:
             return CLEAN_VOICE, (
-                "Router predicts noisy speech and the declared intent is speech/noisy speech. "
-                "`clean_voice` remains the default recommendation; `target_noise_suppression` is experimental."
+                "Router predicts noisy speech, while the declared intent is music. "
+                "`clean_voice` is still suggested because the router is the primary content signal, but verify the input."
             )
-        if content_intent == UNKNOWN_INTENT:
-            return CLEAN_VOICE, (
-                "Router predicts noisy speech, but content intent is unknown. "
-                "`clean_voice` is suggested with caution."
-            )
-        return None, (
-            "Router predicts noisy speech but the declared intent is music. "
-            "No automatic task is selected because router output is content type, not final user intent."
+        return CLEAN_VOICE, (
+            "Router predicts noisy speech with reasonable confidence. `clean_voice` is the default recommendation; "
+            "`target_noise_suppression` is experimental for target-noise examples."
         )
 
     if predicted_label == "environment_noise":
@@ -300,6 +324,20 @@ def analyze_demo_input(
     return "\n".join(lines), _feature_table(row), recommended_task
 
 
+def analyze_demo_input_for_ui(
+    file_path: str | Path | None,
+    content_intent: str = AUTO_INTENT,
+    current_task: str = CLEAN_VOICE,
+) -> tuple[str, list[list[str]], str, str]:
+    """Analyze input and return outputs that can update the recommendation and task dropdown."""
+    markdown, table, recommended_task = analyze_demo_input(file_path, content_intent)
+    task_names = {task.name for task in list_supported_tasks()}
+    if recommended_task and recommended_task in task_names:
+        return markdown, table, recommended_task, recommended_task
+    fallback_task = current_task if current_task in task_names else CLEAN_VOICE
+    return markdown, table, "No automatic recommendation", fallback_task
+
+
 def _intent_run_warning(content_intent: str, task: str) -> tuple[bool, str]:
     if content_intent == SPEECH_INTENT and task in MUSIC_TASKS:
         return True, (
@@ -317,8 +355,8 @@ def _intent_run_warning(content_intent: str, task: str) -> tuple[bool, str]:
             "### Blocked\n"
             "`target_noise_suppression` is an experimental speech/noise baseline and is not intended for music input."
         )
-    if content_intent == UNKNOWN_INTENT:
-        return False, "### Caution\nContent intent is unknown. The selected task will run without automatic validation."
+    if content_intent in {AUTO_INTENT, UNKNOWN_INTENT}:
+        return False, "### Caution\nContent intent is not specified. The selected task will run without automatic validation."
     return False, ""
 
 
@@ -358,25 +396,45 @@ def create_demo() -> object:
     import gradio as gr
 
     task_names = [task.name for task in list_supported_tasks()]
-    with gr.Blocks(title="ML Audio Task Demo") as demo:
-        gr.Markdown("# ML Audio Task Demo")
-        with gr.Row():
-            upload = gr.File(label="Audio or video input", type="filepath", file_types=["audio", "video"])
-            intent_dropdown = gr.Dropdown(label="Content intent", choices=CONTENT_INTENTS, value=SPEECH_INTENT)
-            task_dropdown = gr.Dropdown(label="Task", choices=task_names, value="clean_voice")
-        analyze_button = gr.Button("Analyze Input")
-        analysis_markdown = gr.Markdown()
-        feature_table = gr.Dataframe(headers=["Feature", "Value"], label="Preflight features", interactive=False)
-        recommended_task = gr.Textbox(label="Recommended task", interactive=False)
-        run_button = gr.Button("Run Task", variant="primary")
-        status_markdown = gr.Markdown()
-        summary_table = gr.Dataframe(headers=["Field", "Value"], label="Summary", interactive=False)
-        primary_output = gr.File(label="Primary output")
+    with gr.Blocks(title="ML Audio Processing Demo", css=DEMO_CSS) as demo:
+        gr.Markdown(
+            "# ML Audio Processing Demo\n"
+            "<p class='demo-subtitle'>Upload audio or video, run automatic content analysis, review the suggested task, then process the file and download the output.</p>",
+            elem_classes=["demo-hero"],
+        )
+
+        with gr.Group(elem_classes=["demo-card"]):
+            gr.Markdown("## A. Input")
+            with gr.Row():
+                upload = gr.File(label="Audio or video input", type="filepath", file_types=["audio", "video"])
+                intent_dropdown = gr.Dropdown(label="Content intent", choices=CONTENT_INTENTS, value=AUTO_INTENT)
+            analyze_button = gr.Button("Analyze Input")
+
+        with gr.Group(elem_classes=["demo-card"]):
+            gr.Markdown("## B. Analysis & Recommendation")
+            analysis_markdown = gr.Markdown()
+            feature_table = gr.Dataframe(headers=["Feature", "Value"], label="Preflight features", interactive=False)
+            recommended_task = gr.Textbox(label="Recommended task", interactive=False)
+            task_dropdown = gr.Dropdown(label="Task to run", choices=task_names, value=CLEAN_VOICE)
+
+        with gr.Group(elem_classes=["demo-card"]):
+            gr.Markdown("## C. Processing Result")
+            run_button = gr.Button("Run Task", variant="primary")
+            status_markdown = gr.Markdown()
+            summary_table = gr.Dataframe(headers=["Field", "Value"], label="Summary", interactive=False)
+            primary_output = gr.File(label="Primary output")
 
         analyze_button.click(
-            fn=analyze_demo_input,
-            inputs=[upload, intent_dropdown],
-            outputs=[analysis_markdown, feature_table, recommended_task],
+            fn=analyze_demo_input_for_ui,
+            inputs=[upload, intent_dropdown, task_dropdown],
+            outputs=[analysis_markdown, feature_table, recommended_task, task_dropdown],
+            concurrency_limit=1,
+            concurrency_id="audio-task-demo",
+        )
+        upload.change(
+            fn=analyze_demo_input_for_ui,
+            inputs=[upload, intent_dropdown, task_dropdown],
+            outputs=[analysis_markdown, feature_table, recommended_task, task_dropdown],
             concurrency_limit=1,
             concurrency_id="audio-task-demo",
         )
