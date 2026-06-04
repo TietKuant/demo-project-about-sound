@@ -4,7 +4,7 @@
 
 This dataset layer prepares training data for a future ML audio router.
 The router should predict the broad content type of an input file before a task is selected.
-It is not integrated into the app yet and this sprint does not train a router model.
+It is not integrated into the app yet, but the project now includes baseline training and standalone inference for this router.
 
 ## Router Labels
 
@@ -65,3 +65,17 @@ The current feature set is intentionally small and limited, so results should be
 Feature extraction can fail for unreadable or unsupported media rows; the trainer writes `feature_rows.csv` and records manifest/success/failed row counts in `metrics.json`.
 
 App integration is future work.
+
+## Router Inference
+
+The trained checkpoint can be tested with `scripts/run_audio_router.py`.
+The script loads `checkpoint.pt`, extracts the same lightweight feature set from one audio/video input, normalizes the features using saved training statistics, and writes a JSON summary with:
+
+- predicted content label,
+- confidence,
+- per-label probabilities,
+- extracted feature values.
+
+This predicts broad content type only.
+It does not decide final user intent and does not run a processing engine.
+App integration is the next step after standalone validation.
