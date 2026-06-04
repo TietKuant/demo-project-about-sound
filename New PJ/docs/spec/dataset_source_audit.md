@@ -20,6 +20,30 @@ For target-noise suppression:
 - keep raw downloaded data outside git,
 - commit only small example manifests with fake or non-sensitive paths.
 
+## VoiceBank Clean Speech Manifest
+
+`scripts/build_voicebank_manifest.py` can produce either the original paired VoiceBank benchmark manifest or a clean-speech source manifest.
+
+For target-noise suppression dataset preparation, use:
+
+```text
+--manifest-type clean-speech
+```
+
+This writes:
+
+```text
+sample_id,path,split,notes
+```
+
+The clean-speech manifest can then be validated with `scripts/validate_audio_dataset_manifest.py` and used as the clean input manifest for `scripts/build_target_noise_suppression_dataset.py`.
+
+Clean-speech manifests intended for target-noise suppression should use paths relative to the manifest CSV location. For example, if the manifest is written to `data/manifests/clean_speech.local.csv` and VoiceBank is under `data/external/voicebank/`, clean paths should look like:
+
+```text
+../external/voicebank/clean_testset_wav/p257_001.wav
+```
+
 ## Path Convention
 
 Relative paths are resolved relative to the manifest CSV file location.
