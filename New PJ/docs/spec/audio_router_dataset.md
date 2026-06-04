@@ -62,5 +62,6 @@ The script trains a small PyTorch classifier from lightweight audio features:
 The router predicts content type only: `speech_noise`, `music`, or `environment_noise`.
 It does not decide final user intent by itself.
 The current feature set is intentionally small and limited, so results should be treated as a baseline rather than a final analyzer.
+Feature extraction can fail for unreadable or unsupported media rows; the trainer writes `feature_rows.csv` and records manifest/success/failed row counts in `metrics.json`.
 
 App integration is future work.

@@ -194,6 +194,7 @@ def train_audio_router(
 
     feature_rows = _extract_feature_rows(manifest_path)
     _write_feature_rows(output / "feature_rows.csv", feature_rows)
+    failed_feature_rows = sum(1 for row in feature_rows if row["status"] != "success")
     rows = _successful_training_rows(feature_rows)
 
     labels = sorted({row["router_label"] for row in rows})
@@ -246,6 +247,9 @@ def train_audio_router(
         "status": "success",
         "train_accuracy": train_accuracy,
         "test_accuracy": test_accuracy,
+        "manifest_rows": len(feature_rows),
+        "successful_feature_rows": len(rows),
+        "failed_feature_rows": failed_feature_rows,
         "total_rows": len(rows),
         "train_rows": len(train_indices),
         "test_rows": len(test_indices),

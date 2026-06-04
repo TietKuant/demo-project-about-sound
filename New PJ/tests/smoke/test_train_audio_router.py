@@ -82,6 +82,9 @@ def test_train_audio_router_writes_artifacts(tmp_path: Path) -> None:
     assert metrics["status"] == "success"
     assert "train_accuracy" in metrics
     assert "test_accuracy" in metrics
+    assert metrics["manifest_rows"] == 6
+    assert metrics["successful_feature_rows"] == 6
+    assert metrics["failed_feature_rows"] == 0
     assert metrics["total_rows"] == 6
     assert metrics["train_rows"] == 3
     assert metrics["test_rows"] == 3
