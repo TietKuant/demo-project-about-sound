@@ -91,4 +91,3 @@ def test_run_audio_router_raises_for_missing_checkpoint(tmp_path: Path) -> None:
             input_path=input_path,
             output_summary=tmp_path / "summary.json",
         )
-\n
