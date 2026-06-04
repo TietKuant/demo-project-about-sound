@@ -1,0 +1,4 @@
+sample_id,input_path,router_label,source,split,notes
+speech_noise_001,../external/target-noise-v1/mixed/train/speech_noise_001.wav,speech_noise,target_noise_v1,train,noise_label=dog_bark; snr_db=5
+example_song,../external/musdb18-preview/test/Example Song.stem.mp4,music,musdb18_preview,test,MUSDB18 preview stem container
+esc50_dog_001,../external/ESC-50-master/audio/1-100032-A-0.wav,environment_noise,esc50,train,category=dog; fold=1
