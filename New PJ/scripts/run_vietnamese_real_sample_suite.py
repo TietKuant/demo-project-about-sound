@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -15,7 +16,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.run_music_separation import run_music_separation
 from src.api.contracts import DenoiseRequest
-from src.eval.metrics import load_mono_audio
 from src.io.paths import derive_output_mode, infer_input_type
 from src.pipeline.run_pipeline import run_pipeline
 from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, REMOVE_VOCALS, get_task_spec
@@ -72,12 +72,32 @@ def _resolve_input_path(value: str) -> Path:
 
 def _audio_duration_sec(input_path: Path) -> float | None:
     try:
-        audio, sample_rate = load_mono_audio(input_path)
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(input_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     except Exception:
         return None
-    if sample_rate <= 0:
+    if result.returncode != 0:
         return None
-    return len(audio) / sample_rate
+    try:
+        duration_sec = float(result.stdout.strip())
+    except ValueError:
+        return None
+    if duration_sec <= 0:
+        return None
+    return duration_sec
 
 
 def _format_duration(duration_sec: float | None) -> str:
