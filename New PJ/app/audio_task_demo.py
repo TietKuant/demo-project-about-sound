@@ -43,7 +43,7 @@ ROUTER_CHECKPOINT_ENV_VAR = "AUDIO_ROUTER_CHECKPOINT"
 ROUTER_CONFIDENCE_THRESHOLD = 0.55
 DEMO_CSS = """
 .gradio-container {
-  max-width: 1120px !important;
+  max-width: 1080px !important;
   margin: 0 auto !important;
 }
 .demo-hero h1 {
@@ -51,19 +51,21 @@ DEMO_CSS = """
 }
 .demo-subtitle {
   color: #475569;
-  font-size: 1rem;
+  font-size: 0.98rem;
   margin-top: 0;
 }
-.demo-card {
-  border: 1px solid #d9e2ec;
-  border-radius: 8px;
-  padding: 16px;
-  background: #ffffff;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+.demo-section {
+  padding: 6px 0 12px 0;
 }
-.demo-card h2,
-.demo-card h3 {
+.demo-section h2,
+.demo-section h3 {
   margin-top: 0;
+  margin-bottom: 0.5rem;
+}
+.compact-markdown p,
+.compact-markdown li {
+  margin-top: 0.2rem;
+  margin-bottom: 0.2rem;
 }
 """
 
@@ -244,8 +246,7 @@ def _probability_summary(probabilities: object) -> str:
 def _recommend_with_router(content_intent: str, router_result: dict[str, object]) -> tuple[str | None, str]:
     if content_intent in {AUTO_INTENT, UNKNOWN_INTENT}:
         return None, (
-            "Router output is shown as analysis evidence only in Auto/Unknown mode because current router holdout "
-            "results are not reliable enough for automatic task selection. Choose a content intent or task manually."
+            "Router output is shown as analysis evidence. Select an intent or task before running if needed."
         )
 
     router_status = router_result.get("router_status")
@@ -326,7 +327,7 @@ def analyze_demo_input(
         f"- **Profile notes:** {' '.join(profile_notes)}",
         f"- **Recommended task:** {recommendation_text}",
         f"- **Reason:** {reason}",
-        "- **Limitation:** routing is a baseline aid. If a router checkpoint is configured, the demo uses ML content-type prediction; otherwise it falls back to feature/intent rules. It does not determine final user intent automatically.",
+        "- **Note:** Auto mode does not change the task automatically.",
     ]
     router_error = str(router_result.get("error", ""))
     if router_error:
@@ -411,30 +412,29 @@ def create_demo() -> object:
     with gr.Blocks(title="ML Audio Processing Demo", css=DEMO_CSS) as demo:
         gr.Markdown(
             "# ML Audio Processing Demo\n"
-            "<p class='demo-subtitle'>Upload audio or video, run automatic content analysis, review the suggested task, then process the file and download the output.</p>",
+            "<p class='demo-subtitle'>Analyze an audio/video file, choose a task, and export the processed result.</p>",
             elem_classes=["demo-hero"],
         )
 
-        with gr.Group(elem_classes=["demo-card"]):
-            gr.Markdown("## A. Input")
-            with gr.Row():
+        with gr.Row():
+            with gr.Column(scale=5, elem_classes=["demo-section"]):
+                gr.Markdown("## Input")
                 upload = gr.File(label="Audio or video input", type="filepath", file_types=["audio", "video"])
                 intent_dropdown = gr.Dropdown(label="Content intent", choices=CONTENT_INTENTS, value=AUTO_INTENT)
-            analyze_button = gr.Button("Analyze Input")
+                task_dropdown = gr.Dropdown(label="Task to run", choices=task_names, value=CLEAN_VOICE)
+                with gr.Row():
+                    analyze_button = gr.Button("Analyze Input")
+                    run_button = gr.Button("Run Task", variant="primary")
 
-        with gr.Group(elem_classes=["demo-card"]):
-            gr.Markdown("## B. Analysis & Recommendation")
-            analysis_markdown = gr.Markdown()
-            feature_table = gr.Dataframe(headers=["Feature", "Value"], label="Preflight features", interactive=False)
-            recommended_task = gr.Textbox(label="Recommended task", interactive=False)
-            task_dropdown = gr.Dropdown(label="Task to run", choices=task_names, value=CLEAN_VOICE)
-
-        with gr.Group(elem_classes=["demo-card"]):
-            gr.Markdown("## C. Processing Result")
-            run_button = gr.Button("Run Task", variant="primary")
-            status_markdown = gr.Markdown()
-            summary_table = gr.Dataframe(headers=["Field", "Value"], label="Summary", interactive=False)
-            primary_output = gr.File(label="Primary output")
+            with gr.Column(scale=7, elem_classes=["demo-section"]):
+                gr.Markdown("## Analysis & Recommendation")
+                recommended_task = gr.Textbox(label="Recommended task", interactive=False)
+                analysis_markdown = gr.Markdown(elem_classes=["compact-markdown"])
+                feature_table = gr.Dataframe(headers=["Feature", "Value"], label="Audio feature values", interactive=False)
+                gr.Markdown("## Processing Result")
+                status_markdown = gr.Markdown(elem_classes=["compact-markdown"])
+                summary_table = gr.Dataframe(headers=["Field", "Value"], label="Run summary", interactive=False)
+                primary_output = gr.File(label="Primary output")
 
         analyze_button.click(
             fn=analyze_demo_input_for_ui,

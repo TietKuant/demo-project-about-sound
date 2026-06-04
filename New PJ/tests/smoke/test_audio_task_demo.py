@@ -93,8 +93,7 @@ def test_analyze_demo_input_recommends_clean_voice_for_speech_intent(tmp_path: P
     assert ["duration_sec", "9.000000"] in table
     assert ["rms_energy", "0.0500000000"] in table
     assert "Router status:** `disabled`" in markdown
-    assert "routing is a baseline aid" in markdown
-    assert "falls back to feature/intent rules" in markdown
+    assert "Auto mode does not change the task automatically" in markdown
 
 
 def test_analyze_demo_input_recommends_extract_vocals_for_music_intent(tmp_path: Path) -> None:
@@ -150,7 +149,7 @@ def test_auto_mode_with_router_music_keeps_current_task_dropdown(tmp_path: Path)
     assert dropdown_value == CLEAN_VOICE
     assert ["duration_sec", "9.000000"] in table
     assert "Router predicted label:** `music`" in markdown
-    assert "analysis evidence only in Auto/Unknown mode" in markdown
+    assert "Router output is shown as analysis evidence" in markdown
 
 
 def test_analyze_demo_input_for_ui_keeps_current_task_when_no_recommendation(tmp_path: Path) -> None:
@@ -244,7 +243,7 @@ def test_auto_mode_with_router_environment_noise_returns_no_recommendation(tmp_p
 
     assert recommended_task is None
     assert "Router predicted label:** `environment_noise`" in markdown
-    assert "analysis evidence only in Auto/Unknown mode" in markdown
+    assert "Router output is shown as analysis evidence" in markdown
 
 
 def test_analyze_demo_input_router_failure_falls_back_safely(tmp_path: Path) -> None:
