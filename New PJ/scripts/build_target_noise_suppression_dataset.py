@@ -93,6 +93,10 @@ def _slug(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "item"
 
 
+def _bucket_key(split: str, noise_label: str, snr_db: float) -> tuple[str, str, str]:
+    return split, noise_label, f"{snr_db:g}"
+
+
 def mix_clean_with_noise(clean_path: Path, noise_path: Path, mixed_path: Path, snr_db: float) -> None:
     """Create a mixed audio file with ffmpeg using approximate noise amplitude scaling.
 
@@ -138,6 +142,7 @@ def _build_rows(
     snr_db_values: list[float],
     seed: int,
     max_samples: int | None,
+    max_samples_per_bucket: int | None,
     split_policy: str,
 ) -> list[dict[str, str]]:
     candidates: list[tuple[dict[str, str], dict[str, str], float, str]] = []
@@ -156,8 +161,25 @@ def _build_rows(
             for snr_db in snr_db_values:
                 candidates.append((clean_row, noise_row, snr_db, split))
 
-    rng = random.Random(seed)
-    rng.shuffle(candidates)
+    if max_samples_per_bucket is not None:
+        buckets: dict[tuple[str, str, str], list[tuple[dict[str, str], dict[str, str], float, str]]] = defaultdict(list)
+        for clean_row, noise_row, snr_db, split in candidates:
+            buckets[_bucket_key(split, noise_row["noise_label"], snr_db)].append((clean_row, noise_row, snr_db, split))
+
+        sampled_candidates: list[tuple[dict[str, str], dict[str, str], float, str]] = []
+        for key in sorted(buckets):
+            bucket_candidates = buckets[key]
+            rng = random.Random(f"{seed}:{'|'.join(key)}")
+            rng.shuffle(bucket_candidates)
+            sampled_candidates.extend(bucket_candidates[:max_samples_per_bucket])
+
+        rng = random.Random(f"{seed}:balanced_global")
+        rng.shuffle(sampled_candidates)
+        candidates = sampled_candidates
+    else:
+        rng = random.Random(seed)
+        rng.shuffle(candidates)
+
     if max_samples is not None:
         candidates = candidates[:max_samples]
 
@@ -219,9 +241,11 @@ def _write_summary(
     snr_db_values: list[float],
     selected_classes: list[str],
     split_policy: str,
+    max_samples_per_bucket: int | None,
 ) -> Path:
     counts_by_split = Counter(row["split"] for row in rows)
     counts_by_noise_label = Counter(row["noise_label"] for row in rows)
+    bucket_counts = Counter(f"{row['split']}|{row['noise_label']}|{row['snr_db']}" for row in rows)
     summary = {
         "split_policy": split_policy,
         "total_rows": len(rows),
@@ -230,6 +254,8 @@ def _write_summary(
         "snr_db_values": [float(value) for value in snr_db_values],
         "selected_classes": selected_classes,
         "strict_leakage_validated": split_policy == "source_disjoint",
+        "max_samples_per_bucket": max_samples_per_bucket,
+        "bucket_counts": dict(sorted(bucket_counts.items())),
     }
     summary_path = output_root / "summary.json"
     with summary_path.open("w", encoding="utf-8") as json_file:
@@ -246,6 +272,7 @@ def build_target_noise_suppression_dataset(
     classes: list[str],
     snr_db_values: list[float],
     max_samples: int | None = None,
+    max_samples_per_bucket: int | None = None,
     seed: int = 13,
     split_policy: str = "source_disjoint",
 ) -> Path:
@@ -256,6 +283,10 @@ def build_target_noise_suppression_dataset(
         raise ValueError("At least one SNR value must be provided.")
     if split_policy not in SPLIT_POLICIES:
         raise ValueError(f"Unsupported split policy: {split_policy}")
+    if max_samples is not None and max_samples_per_bucket is not None:
+        raise ValueError("max_samples and max_samples_per_bucket cannot both be set.")
+    if max_samples_per_bucket is not None and max_samples_per_bucket <= 0:
+        raise ValueError("max_samples_per_bucket must be positive.")
 
     output = Path(output_root)
     (output / "mixed").mkdir(parents=True, exist_ok=True)
@@ -278,6 +309,7 @@ def build_target_noise_suppression_dataset(
         snr_db_values=snr_db_values,
         seed=seed,
         max_samples=max_samples,
+        max_samples_per_bucket=max_samples_per_bucket,
         split_policy=split_policy,
     )
     if not rows:
@@ -299,6 +331,7 @@ def build_target_noise_suppression_dataset(
         snr_db_values=snr_db_values,
         selected_classes=selected_classes,
         split_policy=split_policy,
+        max_samples_per_bucket=max_samples_per_bucket,
     )
     return manifest_path.resolve()
 
@@ -312,6 +345,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--classes", required=True, nargs="+", help="Noise labels to include.")
     parser.add_argument("--snr-db-values", required=True, nargs="+", type=float)
     parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument("--max-samples-per-bucket", type=int, default=None)
     parser.add_argument("--seed", type=int, default=13)
     parser.add_argument("--split-policy", choices=sorted(SPLIT_POLICIES), default="source_disjoint")
     return parser
@@ -328,6 +362,7 @@ def main() -> int:
             classes=args.classes,
             snr_db_values=args.snr_db_values,
             max_samples=args.max_samples,
+            max_samples_per_bucket=args.max_samples_per_bucket,
             seed=args.seed,
             split_policy=args.split_policy,
         )

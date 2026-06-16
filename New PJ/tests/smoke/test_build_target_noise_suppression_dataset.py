@@ -73,6 +73,44 @@ def _write_noise_manifest(path: Path) -> None:
         )
 
 
+def _write_balanced_clean_manifest(path: Path) -> None:
+    with path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=["sample_id", "path", "split", "notes"])
+        writer.writeheader()
+        for split in ("train", "val", "test"):
+            for index in range(3):
+                sample_id = f"clean_{split}_{index}"
+                writer.writerow(
+                    {
+                        "sample_id": sample_id,
+                        "path": f"audio/{sample_id}.wav",
+                        "split": split,
+                        "notes": f"split={split}",
+                    }
+                )
+
+
+def _write_balanced_noise_manifest(path: Path) -> None:
+    labels = ["dog_bark", "car_horn", "siren"]
+    with path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=["noise_id", "path", "noise_label", "source", "notes", "split"])
+        writer.writeheader()
+        for split in ("train", "val", "test"):
+            for label in labels:
+                for index in range(2):
+                    noise_id = f"{label}_{split}_{index}"
+                    writer.writerow(
+                        {
+                            "noise_id": noise_id,
+                            "path": f"noise/{noise_id}.wav",
+                            "noise_label": label,
+                            "source": "example",
+                            "notes": f"split={split}",
+                            "split": split,
+                        }
+                    )
+
+
 def _read_rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as csv_file:
         return list(csv.DictReader(csv_file))
@@ -142,6 +180,8 @@ def test_build_dataset_filters_noise_classes_and_writes_manifest_and_summary(tmp
     assert summary["snr_db_values"] == [0.0, 5.0]
     assert summary["selected_classes"] == ["dog_bark"]
     assert summary["strict_leakage_validated"] is True
+    assert summary["max_samples_per_bucket"] is None
+    assert summary["bucket_counts"] == {"train|dog_bark|0": 1, "train|dog_bark|5": 1}
 
 
 def test_build_dataset_is_deterministic_with_seed(tmp_path: Path) -> None:
@@ -297,6 +337,164 @@ def test_legacy_clean_split_still_works_and_marks_policy(tmp_path: Path) -> None
     summary = json.loads((output_root / "summary.json").read_text(encoding="utf-8"))
     assert summary["split_policy"] == "legacy_clean_split"
     assert summary["strict_leakage_validated"] is False
+
+
+def test_max_samples_and_max_samples_per_bucket_are_mutually_exclusive(tmp_path: Path) -> None:
+    clean_manifest = tmp_path / "clean.csv"
+    noise_manifest = tmp_path / "noise.csv"
+    _write_balanced_clean_manifest(clean_manifest)
+    _write_balanced_noise_manifest(noise_manifest)
+
+    try:
+        build_target_noise_suppression_dataset(
+            clean_manifest=clean_manifest,
+            noise_manifest=noise_manifest,
+            output_root=tmp_path / "dataset",
+            classes=["dog_bark"],
+            snr_db_values=[0.0],
+            max_samples=1,
+            max_samples_per_bucket=1,
+        )
+    except ValueError as exc:
+        assert "cannot both be set" in str(exc)
+    else:
+        raise AssertionError("Expected mutually exclusive sampling arguments to fail.")
+
+
+def test_max_samples_per_bucket_must_be_positive(tmp_path: Path) -> None:
+    clean_manifest = tmp_path / "clean.csv"
+    noise_manifest = tmp_path / "noise.csv"
+    _write_balanced_clean_manifest(clean_manifest)
+    _write_balanced_noise_manifest(noise_manifest)
+
+    try:
+        build_target_noise_suppression_dataset(
+            clean_manifest=clean_manifest,
+            noise_manifest=noise_manifest,
+            output_root=tmp_path / "dataset",
+            classes=["dog_bark"],
+            snr_db_values=[0.0],
+            max_samples_per_bucket=0,
+        )
+    except ValueError as exc:
+        assert "must be positive" in str(exc)
+    else:
+        raise AssertionError("Expected non-positive max_samples_per_bucket to fail.")
+
+
+def test_balanced_sampling_caps_each_split_label_snr_bucket(tmp_path: Path) -> None:
+    clean_manifest = tmp_path / "clean.csv"
+    noise_manifest = tmp_path / "noise.csv"
+    output_root = tmp_path / "dataset"
+    _write_balanced_clean_manifest(clean_manifest)
+    _write_balanced_noise_manifest(noise_manifest)
+
+    with patch("scripts.build_target_noise_suppression_dataset.mix_clean_with_noise", side_effect=_mock_mix):
+        manifest_path = build_target_noise_suppression_dataset(
+            clean_manifest=clean_manifest,
+            noise_manifest=noise_manifest,
+            output_root=output_root,
+            classes=["dog_bark", "car_horn", "siren"],
+            snr_db_values=[-5.0, 0.0, 5.0],
+            max_samples_per_bucket=2,
+            seed=23,
+        )
+
+    rows = _read_rows(manifest_path)
+    bucket_counts: dict[tuple[str, str, str], int] = {}
+    for row in rows:
+        key = (row["split"], row["noise_label"], row["snr_db"])
+        bucket_counts[key] = bucket_counts.get(key, 0) + 1
+    assert len(bucket_counts) == 27
+    assert set(bucket_counts.values()) == {2}
+    assert len(rows) == 54
+
+    summary = json.loads((output_root / "summary.json").read_text(encoding="utf-8"))
+    assert summary["max_samples_per_bucket"] == 2
+    assert summary["bucket_counts"]["train|dog_bark|-5"] == 2
+    assert summary["bucket_counts"]["val|siren|5"] == 2
+
+
+def test_balanced_sampling_is_deterministic_with_same_seed(tmp_path: Path) -> None:
+    clean_manifest = tmp_path / "clean.csv"
+    noise_manifest = tmp_path / "noise.csv"
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    _write_balanced_clean_manifest(clean_manifest)
+    _write_balanced_noise_manifest(noise_manifest)
+
+    with patch("scripts.build_target_noise_suppression_dataset.mix_clean_with_noise", side_effect=_mock_mix):
+        first_manifest = build_target_noise_suppression_dataset(
+            clean_manifest=clean_manifest,
+            noise_manifest=noise_manifest,
+            output_root=first_root,
+            classes=["dog_bark", "car_horn"],
+            snr_db_values=[-5.0, 0.0],
+            max_samples_per_bucket=1,
+            seed=71,
+        )
+        second_manifest = build_target_noise_suppression_dataset(
+            clean_manifest=clean_manifest,
+            noise_manifest=noise_manifest,
+            output_root=second_root,
+            classes=["dog_bark", "car_horn"],
+            snr_db_values=[-5.0, 0.0],
+            max_samples_per_bucket=1,
+            seed=71,
+        )
+
+    first_projection = [
+        (row["sample_id"], row["noise_source_id"], row["noise_label"], row["snr_db"], row["split"])
+        for row in _read_rows(first_manifest)
+    ]
+    second_projection = [
+        (row["sample_id"], row["noise_source_id"], row["noise_label"], row["snr_db"], row["split"])
+        for row in _read_rows(second_manifest)
+    ]
+    assert first_projection == second_projection
+
+
+def test_balanced_sampling_keeps_source_disjoint_leakage_validation_passing(tmp_path: Path) -> None:
+    clean_manifest = tmp_path / "clean.csv"
+    noise_manifest = tmp_path / "noise.csv"
+    _write_balanced_clean_manifest(clean_manifest)
+    _write_balanced_noise_manifest(noise_manifest)
+
+    with patch("scripts.build_target_noise_suppression_dataset.mix_clean_with_noise", side_effect=_mock_mix):
+        manifest_path = build_target_noise_suppression_dataset(
+            clean_manifest=clean_manifest,
+            noise_manifest=noise_manifest,
+            output_root=tmp_path / "dataset",
+            classes=["dog_bark", "car_horn", "siren"],
+            snr_db_values=[-5.0, 0.0, 5.0],
+            max_samples_per_bucket=1,
+            seed=41,
+        )
+
+    assert validate_no_source_split_leakage(_read_rows(manifest_path)) == []
+
+
+def test_legacy_max_samples_behavior_still_works(tmp_path: Path) -> None:
+    clean_manifest = tmp_path / "clean.csv"
+    noise_manifest = tmp_path / "noise.csv"
+    _write_balanced_clean_manifest(clean_manifest)
+    _write_balanced_noise_manifest(noise_manifest)
+
+    with patch("scripts.build_target_noise_suppression_dataset.mix_clean_with_noise", side_effect=_mock_mix):
+        manifest_path = build_target_noise_suppression_dataset(
+            clean_manifest=clean_manifest,
+            noise_manifest=noise_manifest,
+            output_root=tmp_path / "dataset",
+            classes=["dog_bark", "car_horn", "siren"],
+            snr_db_values=[-5.0, 0.0, 5.0],
+            max_samples=5,
+            seed=11,
+            split_policy="legacy_clean_split",
+        )
+
+    rows = _read_rows(manifest_path)
+    assert len(rows) == 5
+    assert {row["split_policy"] for row in rows} == {"legacy_clean_split"}
 
 
 def test_validate_no_source_split_leakage_catches_repeated_noise_source() -> None:
