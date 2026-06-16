@@ -44,6 +44,12 @@ FEATURE_COLUMNS = [
     "zcr_std",
     "silence_ratio",
 ]
+TRAINING_FEATURE_COLUMNS = [column for column in FEATURE_COLUMNS if column != "duration_sec"]
+EXCLUDED_FEATURE_COLUMNS = [column for column in FEATURE_COLUMNS if column not in TRAINING_FEATURE_COLUMNS]
+FEATURE_POLICY_NOTES = (
+    "duration_sec is retained in feature_rows.csv for quality control, but excluded "
+    "from default training features to reduce dataset/source fingerprint leakage."
+)
 FEATURE_ROW_COLUMNS = [
     "sample_id",
     "input_path",
@@ -135,35 +141,44 @@ def _successful_training_rows(feature_rows: list[dict[str, str]]) -> list[dict[s
     return rows
 
 
-def _feature_matrix(rows: list[dict[str, str]]) -> np.ndarray:
-    return np.asarray([[float(row[column]) for column in FEATURE_COLUMNS] for row in rows], dtype=np.float32)
+def _feature_matrix(rows: list[dict[str, str]], feature_columns: list[str]) -> np.ndarray:
+    return np.asarray([[float(row[column]) for column in feature_columns] for row in rows], dtype=np.float32)
 
 
-def _normalize(train_features: np.ndarray, all_features: np.ndarray) -> tuple[np.ndarray, np.ndarray, dict[str, dict[str, float]]]:
+def _normalize(
+    train_features: np.ndarray,
+    all_features: np.ndarray,
+    feature_columns: list[str],
+) -> tuple[np.ndarray, np.ndarray, dict[str, dict[str, float]]]:
     mean = train_features.mean(axis=0)
     std = train_features.std(axis=0)
     std = np.where(std < 1e-8, 1.0, std)
     normalized = (all_features - mean) / std
     stats = {
         column: {"mean": float(mean[index]), "std": float(std[index])}
-        for index, column in enumerate(FEATURE_COLUMNS)
+        for index, column in enumerate(feature_columns)
     }
     return normalized.astype(np.float32), train_features, stats
 
 
-def _accuracy(logits: torch.Tensor, labels: torch.Tensor) -> float:
-    predictions = torch.argmax(logits, dim=1)
-    return float((predictions == labels).float().mean().item())
+def _safe_divide(numerator: float, denominator: float) -> float:
+    if denominator == 0:
+        return 0.0
+    return float(numerator / denominator)
+
+
+def _accuracy_from_indices(truth: list[int], predictions: list[int]) -> float:
+    if not truth:
+        return 0.0
+    correct = sum(1 for true_index, predicted_index in zip(truth, predictions) if true_index == predicted_index)
+    return _safe_divide(correct, len(truth))
 
 
 def _confusion_matrix(
-    *,
-    logits: torch.Tensor,
-    labels: torch.Tensor,
+    truth: list[int],
+    predictions: list[int],
     index_to_label: dict[int, str],
 ) -> dict[str, dict[str, int]]:
-    predictions = torch.argmax(logits, dim=1).cpu().numpy().tolist()
-    truth = labels.cpu().numpy().tolist()
     matrix = {
         true_label: {predicted_label: 0 for predicted_label in index_to_label.values()}
         for true_label in index_to_label.values()
@@ -171,6 +186,100 @@ def _confusion_matrix(
     for true_index, predicted_index in zip(truth, predictions):
         matrix[index_to_label[true_index]][index_to_label[predicted_index]] += 1
     return matrix
+
+
+def _classification_report(
+    *,
+    truth: list[int],
+    predictions: list[int],
+    index_to_label: dict[int, str],
+    macro_labels: list[str] | None = None,
+) -> dict[str, object]:
+    matrix = _confusion_matrix(truth, predictions, index_to_label)
+    labels = list(index_to_label.values())
+    macro_label_set = set(macro_labels or labels)
+    per_class: dict[str, dict[str, float | int]] = {}
+    total_support = 0
+    weighted_f1_sum = 0.0
+    macro_precisions: list[float] = []
+    macro_recalls: list[float] = []
+    macro_f1_scores: list[float] = []
+
+    for label in labels:
+        true_positive = matrix[label][label]
+        false_negative = sum(matrix[label].values()) - true_positive
+        false_positive = sum(matrix[other_label][label] for other_label in labels if other_label != label)
+        support = true_positive + false_negative
+        precision = _safe_divide(true_positive, true_positive + false_positive)
+        recall = _safe_divide(true_positive, support)
+        f1 = _safe_divide(2.0 * precision * recall, precision + recall)
+        per_class[label] = {
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+            "support": support,
+        }
+        total_support += support
+        weighted_f1_sum += f1 * support
+        if label in macro_label_set:
+            macro_precisions.append(precision)
+            macro_recalls.append(recall)
+            macro_f1_scores.append(f1)
+
+    return {
+        "per_class": per_class,
+        "macro_precision": _safe_divide(sum(macro_precisions), len(macro_precisions)),
+        "macro_recall": _safe_divide(sum(macro_recalls), len(macro_recalls)),
+        "macro_f1": _safe_divide(sum(macro_f1_scores), len(macro_f1_scores)),
+        "weighted_f1": _safe_divide(weighted_f1_sum, total_support),
+        "accuracy": _accuracy_from_indices(truth, predictions),
+        "confusion_matrix": matrix,
+    }
+
+
+def _tensor_indices(tensor: torch.Tensor) -> list[int]:
+    return tensor.cpu().numpy().astype(int).tolist()
+
+
+def _logit_predictions(logits: torch.Tensor) -> list[int]:
+    return torch.argmax(logits, dim=1).cpu().numpy().astype(int).tolist()
+
+
+def _count_by_fields(rows: list[dict[str, str]], fields: tuple[str, ...]) -> dict[str, int]:
+    counts: Counter[str] = Counter("|".join(row[field] for field in fields) for row in rows)
+    return dict(sorted(counts.items()))
+
+
+def _test_metrics_by_source(
+    *,
+    rows: list[dict[str, str]],
+    truth: list[int],
+    predictions: list[int],
+    index_to_label: dict[int, str],
+) -> dict[str, dict[str, object]]:
+    metrics: dict[str, dict[str, object]] = {}
+    labels = list(index_to_label.values())
+    sources = sorted({row["source"] for row in rows})
+    for source in sources:
+        source_indices = [index for index, row in enumerate(rows) if row["source"] == source]
+        source_truth = [truth[index] for index in source_indices]
+        source_predictions = [predictions[index] for index in source_indices]
+        support_by_label = Counter(index_to_label[index] for index in source_truth)
+        predicted_by_label = Counter(index_to_label[index] for index in source_predictions)
+        source_report = _classification_report(
+            truth=source_truth,
+            predictions=source_predictions,
+            index_to_label=index_to_label,
+            macro_labels=sorted(support_by_label),
+        )
+        metrics[source] = {
+            "row_count": len(source_indices),
+            "accuracy": source_report["accuracy"],
+            "support_by_label": {label: support_by_label.get(label, 0) for label in labels},
+            "predicted_by_label": {label: predicted_by_label.get(label, 0) for label in labels},
+            "confusion_matrix": source_report["confusion_matrix"],
+        }
+    return metrics
 
 
 def train_audio_router(
@@ -200,17 +309,22 @@ def train_audio_router(
     label_to_index = {label: index for index, label in enumerate(labels)}
     index_to_label = {index: label for label, index in label_to_index.items()}
 
-    all_features = _feature_matrix(rows)
+    training_feature_columns = list(TRAINING_FEATURE_COLUMNS)
+    all_features = _feature_matrix(rows, training_feature_columns)
     train_indices = [index for index, row in enumerate(rows) if row["split"] == "train"]
     test_indices = [index for index, row in enumerate(rows) if row["split"] == "test"]
-    normalized_features, _raw_train_features, feature_stats = _normalize(all_features[train_indices], all_features)
+    normalized_features, _raw_train_features, feature_stats = _normalize(
+        all_features[train_indices],
+        all_features,
+        training_feature_columns,
+    )
 
     x = torch.tensor(normalized_features, dtype=torch.float32)
     y = torch.tensor([label_to_index[row["router_label"]] for row in rows], dtype=torch.long)
     train_index_tensor = torch.tensor(train_indices, dtype=torch.long)
     test_index_tensor = torch.tensor(test_indices, dtype=torch.long)
 
-    model = AudioRouterMLP(input_dim=len(FEATURE_COLUMNS), num_classes=len(labels))
+    model = AudioRouterMLP(input_dim=len(training_feature_columns), num_classes=len(labels))
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     loss_curve: list[dict[str, str]] = []
 
@@ -239,13 +353,34 @@ def train_audio_router(
         logits = model(x)
         train_logits = logits[train_index_tensor]
         test_logits = logits[test_index_tensor]
-        train_accuracy = _accuracy(train_logits, y[train_index_tensor])
-        test_accuracy = _accuracy(test_logits, y[test_index_tensor])
+        train_truth = _tensor_indices(y[train_index_tensor])
+        test_truth = _tensor_indices(y[test_index_tensor])
+        train_predictions = _logit_predictions(train_logits)
+        test_predictions = _logit_predictions(test_logits)
+        train_accuracy = _accuracy_from_indices(train_truth, train_predictions)
+        test_accuracy = _accuracy_from_indices(test_truth, test_predictions)
+
+    test_rows = [rows[index] for index in test_indices]
+    train_classification_report = _classification_report(
+        truth=train_truth,
+        predictions=train_predictions,
+        index_to_label=index_to_label,
+    )
+    test_classification_report = _classification_report(
+        truth=test_truth,
+        predictions=test_predictions,
+        index_to_label=index_to_label,
+    )
 
     metrics = {
         "status": "success",
+        "feature_columns": training_feature_columns,
+        "excluded_feature_columns": EXCLUDED_FEATURE_COLUMNS,
+        "feature_policy_notes": FEATURE_POLICY_NOTES,
         "train_accuracy": train_accuracy,
         "test_accuracy": test_accuracy,
+        "train_classification_report": train_classification_report,
+        "test_classification_report": test_classification_report,
         "manifest_rows": len(feature_rows),
         "successful_feature_rows": len(rows),
         "failed_feature_rows": failed_feature_rows,
@@ -253,14 +388,24 @@ def train_audio_router(
         "train_rows": len(train_indices),
         "test_rows": len(test_indices),
         "counts_by_label": dict(sorted(Counter(row["router_label"] for row in rows).items())),
-        "confusion_matrix": _confusion_matrix(logits=logits[test_index_tensor], labels=y[test_index_tensor], index_to_label=index_to_label),
+        "counts_by_split": dict(sorted(Counter(row["split"] for row in rows).items())),
+        "counts_by_source": dict(sorted(Counter(row["source"] for row in rows).items())),
+        "counts_by_split_label": _count_by_fields(rows, ("split", "router_label")),
+        "counts_by_source_label": _count_by_fields(rows, ("source", "router_label")),
+        "test_metrics_by_source": _test_metrics_by_source(
+            rows=test_rows,
+            truth=test_truth,
+            predictions=test_predictions,
+            index_to_label=index_to_label,
+        ),
+        "confusion_matrix": test_classification_report["confusion_matrix"],
     }
 
     torch.save(
         {
             "model_state_dict": model.state_dict(),
             "config": {
-                "feature_columns": FEATURE_COLUMNS,
+                "feature_columns": training_feature_columns,
                 "label_to_index": label_to_index,
                 "feature_stats": feature_stats,
             },
