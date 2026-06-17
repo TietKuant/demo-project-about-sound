@@ -90,8 +90,16 @@ def run_audio_router_batch(
     summary_dir = output_path.parent / "router_summaries"
     summary_dir.mkdir(parents=True, exist_ok=True)
 
+    media_files = _scan_media_files(input_root, patterns)
+    if not media_files:
+        supported_suffixes = ", ".join(sorted(COMMON_MEDIA_SUFFIXES))
+        raise ValueError(
+            f"Audio Router batch found no supported media files in {input_root}. "
+            f"Supported suffixes: {supported_suffixes}"
+        )
+
     rows: list[dict[str, str]] = []
-    for input_path in _scan_media_files(input_root, patterns):
+    for input_path in media_files:
         summary_path = summary_dir / _safe_summary_name(input_path, input_root)
         try:
             summary = run_audio_router(

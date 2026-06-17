@@ -133,3 +133,20 @@ def test_run_audio_router_batch_raises_for_non_directory_input(tmp_path: Path) -
             input_dir=input_file,
             output_csv=tmp_path / "reports" / "router_batch.csv",
         )
+
+
+def test_run_audio_router_batch_raises_for_empty_input_dir(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "checkpoint.pt"
+    input_dir = tmp_path / "empty_inputs"
+    input_dir.mkdir()
+    _write_checkpoint(checkpoint)
+
+    with pytest.raises(ValueError, match="no supported media files") as exc_info:
+        run_audio_router_batch(
+            checkpoint_path=checkpoint,
+            input_dir=input_dir,
+            output_csv=tmp_path / "reports" / "router_batch.csv",
+        )
+
+    assert str(input_dir) in str(exc_info.value)
+    assert ".wav" in str(exc_info.value)
