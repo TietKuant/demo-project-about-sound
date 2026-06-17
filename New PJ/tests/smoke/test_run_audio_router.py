@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 import torch
 
-from scripts.run_audio_router import run_audio_router
+from scripts.run_audio_router import build_arg_parser, build_router_decision, run_audio_router
 from scripts.train_audio_router import FEATURE_COLUMNS
 from src.router.audio_router_model import AudioRouterMLP
 
@@ -46,6 +46,36 @@ def _write_checkpoint(path: Path) -> None:
     )
 
 
+def _write_v4_checkpoint(path: Path) -> None:
+    labels = {
+        "environment_only": 0,
+        "music_with_vocals": 1,
+        "speech_clean": 2,
+        "speech_target_noise": 3,
+    }
+    model = AudioRouterMLP(input_dim=len(FEATURE_COLUMNS), num_classes=len(labels))
+    feature_stats = {column: {"mean": 0.0, "std": 1.0} for column in FEATURE_COLUMNS}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "config": {
+                "feature_columns": FEATURE_COLUMNS,
+                "label_to_index": labels,
+                "feature_stats": feature_stats,
+                "class_weighting": "balanced",
+                "class_weights": {
+                    "environment_only": 1.0,
+                    "music_with_vocals": 1.0,
+                    "speech_clean": 1.0,
+                    "speech_target_noise": 1.0,
+                },
+            },
+        },
+        path,
+    )
+
+
 def test_run_audio_router_writes_summary(tmp_path: Path) -> None:
     checkpoint = tmp_path / "checkpoint.pt"
     input_path = tmp_path / "input.wav"
@@ -66,6 +96,17 @@ def test_run_audio_router_writes_summary(tmp_path: Path) -> None:
     assert written["predicted_label"] in {"speech_noise", "music", "environment_noise"}
     assert set(written["probabilities"]) == {"speech_noise", "music", "environment_noise"}
     assert isinstance(written["confidence"], float)
+    assert written["confidence_threshold"] == 0.55
+    assert "accepted" in written
+    assert "route_target" in written
+    assert "engine_target" in written
+    assert "recommended_task" in written
+    assert "decision_reason" in written
+    assert "warnings" in written
+    assert written["decision_reason"] in {"unknown_router_label", "low_confidence", "accepted_router_prediction"}
+    assert written["model_metadata"]["feature_columns"] == FEATURE_COLUMNS
+    assert written["model_metadata"]["label_to_index"] == {"speech_noise": 0, "music": 1, "environment_noise": 2}
+    assert written["model_metadata"]["class_weights"] == {}
     assert "rms_energy" in written["features"]
     assert "duration_sec" in written["features"]
     assert "spectral_rolloff_hz" in written["features"]
@@ -76,6 +117,74 @@ def test_run_audio_router_writes_summary(tmp_path: Path) -> None:
     assert "rms_std" in written["features"]
     assert "zcr_std" in written["features"]
     assert "silence_ratio" in written["features"]
+
+
+def test_build_router_decision_low_confidence_abstains() -> None:
+    decision = build_router_decision("music_with_vocals", 0.2, confidence_threshold=0.55)
+
+    assert decision["accepted"] is False
+    assert decision["route_target"] == "manual_required"
+    assert decision["engine_target"] == "none"
+    assert decision["recommended_task"] is None
+    assert decision["decision_reason"] == "low_confidence"
+    assert decision["warnings"] == ["low_confidence_router_prediction"]
+
+
+def test_build_router_decision_target_noise_maps_to_experimental_task() -> None:
+    decision = build_router_decision("speech_target_noise", 0.9, confidence_threshold=0.55)
+
+    assert decision["accepted"] is True
+    assert decision["route_target"] == "target_noise_suppression"
+    assert decision["engine_target"] == "target_noise_suppressor"
+    assert decision["recommended_task"] == "target_noise_suppression"
+    assert decision["decision_reason"] == "accepted_router_prediction"
+    assert decision["warnings"] == ["target_noise_suppression_is_experimental"]
+
+
+def test_run_audio_router_summary_includes_v4_model_metadata(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "checkpoint.pt"
+    input_path = tmp_path / "input.wav"
+    summary_path = tmp_path / "router_summary.json"
+    _write_v4_checkpoint(checkpoint)
+    _write_sine_wav(input_path)
+
+    summary = run_audio_router(
+        checkpoint_path=checkpoint,
+        input_path=input_path,
+        output_summary=summary_path,
+        confidence_threshold=0.1,
+    )
+
+    written = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["confidence_threshold"] == 0.1
+    assert written["model_metadata"]["class_weighting"] == "balanced"
+    assert set(written["model_metadata"]["class_weights"]) == {
+        "environment_only",
+        "music_with_vocals",
+        "speech_clean",
+        "speech_target_noise",
+    }
+    assert set(written["model_metadata"]["label_to_index"]) == {
+        "environment_only",
+        "music_with_vocals",
+        "speech_clean",
+        "speech_target_noise",
+    }
+
+
+def test_parser_accepts_confidence_threshold() -> None:
+    args = build_arg_parser().parse_args(
+        [
+            "--checkpoint",
+            "checkpoint.pt",
+            "--input",
+            "input.wav",
+            "--confidence-threshold",
+            "0.72",
+        ]
+    )
+
+    assert args.confidence_threshold == 0.72
 
 
 def test_run_audio_router_raises_for_missing_input(tmp_path: Path) -> None:

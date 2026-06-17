@@ -24,6 +24,71 @@ from scripts.extract_audio_features import _audio_for_features, _features
 from src.router.audio_router_model import AudioRouterMLP
 
 
+DEFAULT_CONFIDENCE_THRESHOLD = 0.55
+ROUTER_DECISIONS = {
+    "environment_only": {
+        "route_target": "out_of_scope",
+        "engine_target": "none",
+        "recommended_task": None,
+        "warnings": [],
+    },
+    "music_with_vocals": {
+        "route_target": "manual_required",
+        "engine_target": "demucs",
+        "recommended_task": "extract_vocals",
+        "warnings": ["manual_music_task_selection_required"],
+    },
+    "speech_clean": {
+        "route_target": "no_process",
+        "engine_target": "none",
+        "recommended_task": None,
+        "warnings": [],
+    },
+    "speech_target_noise": {
+        "route_target": "target_noise_suppression",
+        "engine_target": "target_noise_suppressor",
+        "recommended_task": "target_noise_suppression",
+        "warnings": ["target_noise_suppression_is_experimental"],
+    },
+}
+
+
+def build_router_decision(
+    predicted_label: str,
+    confidence: float,
+    confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+) -> dict[str, object]:
+    """Build a conservative routing decision from a router label and confidence."""
+    if predicted_label not in ROUTER_DECISIONS:
+        return {
+            "accepted": False,
+            "route_target": "manual_required",
+            "engine_target": "none",
+            "recommended_task": None,
+            "decision_reason": "unknown_router_label",
+            "warnings": ["unknown_router_label"],
+        }
+    if confidence < confidence_threshold:
+        return {
+            "accepted": False,
+            "route_target": "manual_required",
+            "engine_target": "none",
+            "recommended_task": None,
+            "decision_reason": "low_confidence",
+            "warnings": ["low_confidence_router_prediction"],
+        }
+
+    decision = dict(ROUTER_DECISIONS[predicted_label])
+    decision.update(
+        {
+            "accepted": True,
+            "decision_reason": "accepted_router_prediction",
+            "warnings": list(decision["warnings"]),
+        }
+    )
+    return decision
+
+
 def _load_checkpoint(checkpoint_path: Path, device: str) -> dict:
     checkpoint = torch.load(checkpoint_path, map_location=device)
     required_keys = {"model_state_dict", "config"}
@@ -60,6 +125,7 @@ def run_audio_router(
     input_path: Path,
     output_summary: Path | None = None,
     device: str = "cpu",
+    confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
 ) -> dict:
     """Predict broad content type for one audio/video input."""
     checkpoint = Path(checkpoint_path)
@@ -92,14 +158,24 @@ def run_audio_router(
         for index in range(len(index_to_label))
     }
     predicted_label = max(probabilities, key=probabilities.get)
+    confidence = probabilities[predicted_label]
+    decision = build_router_decision(predicted_label, confidence, confidence_threshold)
     summary = {
         "status": "success",
         "input_path": str(input_file),
         "checkpoint_path": str(checkpoint),
         "predicted_label": predicted_label,
-        "confidence": probabilities[predicted_label],
+        "confidence": confidence,
+        "confidence_threshold": confidence_threshold,
+        **decision,
         "probabilities": probabilities,
         "features": features,
+        "model_metadata": {
+            "class_weighting": config.get("class_weighting"),
+            "class_weights": config.get("class_weights", {}),
+            "feature_columns": feature_columns,
+            "label_to_index": label_to_index,
+        },
         "error": "",
     }
 
@@ -117,6 +193,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint", required=True, type=Path)
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--output-summary", type=Path, default=None)
+    parser.add_argument("--confidence-threshold", type=float, default=DEFAULT_CONFIDENCE_THRESHOLD)
     parser.add_argument("--device", default="cpu")
     return parser
 
@@ -130,8 +207,15 @@ def main() -> int:
             input_path=args.input,
             output_summary=args.output_summary,
             device=args.device,
+            confidence_threshold=args.confidence_threshold,
         )
-        print(f"Predicted router label: {summary['predicted_label']} ({summary['confidence']:.4f})")
+        print(
+            "Predicted router label: "
+            f"{summary['predicted_label']} ({summary['confidence']:.4f}); "
+            f"accepted={str(summary['accepted']).lower()}; "
+            f"route_target={summary['route_target']}; "
+            f"recommended_task={summary['recommended_task']}"
+        )
         return 0
     except Exception as exc:
         print(f"Error: {exc}")
