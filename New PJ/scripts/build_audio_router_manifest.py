@@ -60,7 +60,7 @@ def _read_csv(path: Path, required_columns: set[str], source_name: str) -> list[
         return list(reader)
 
 
-def _target_noise_rows(manifest_path: Path, output_manifest: Path) -> list[dict[str, str]]:
+def _target_noise_rows(manifest_path: Path, output_manifest: Path, target_noise_source: str) -> list[dict[str, str]]:
     rows = []
     for index, row in enumerate(_read_csv(manifest_path, TARGET_NOISE_COLUMNS, "Target-noise"), start=1):
         mixed_path = row.get("mixed_path", "").strip()
@@ -75,7 +75,7 @@ def _target_noise_rows(manifest_path: Path, output_manifest: Path) -> list[dict[
                 "sample_id": sample_id,
                 "input_path": _readable_path(_resolve_audio_input_path(mixed_path, manifest_path), output_manifest),
                 "router_label": SPEECH_NOISE,
-                "source": "target_noise_v1",
+                "source": target_noise_source,
                 "split": row.get("split", "").strip() or "train",
                 "notes": notes,
             }
@@ -227,6 +227,7 @@ def build_audio_router_manifest(
     esc50_root: Path | None = None,
     urbansound8k_metadata: Path | None = None,
     urbansound8k_audio_root: Path | None = None,
+    target_noise_source: str = "target_noise_v1",
     max_per_label: int = 300,
     seed: int = 42,
 ) -> Path:
@@ -235,7 +236,7 @@ def build_audio_router_manifest(
     rows: list[dict[str, str]] = []
 
     if target_noise_manifest is not None:
-        rows.extend(_target_noise_rows(target_noise_manifest, output_path))
+        rows.extend(_target_noise_rows(target_noise_manifest, output_path, target_noise_source))
     if voicebank_root is not None:
         rows.extend(_voicebank_rows(voicebank_root, output_path))
     if musdb_root is not None:
@@ -269,6 +270,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--esc50-root", type=Path, default=None)
     parser.add_argument("--urbansound8k-metadata", type=Path, default=None)
     parser.add_argument("--urbansound8k-audio-root", type=Path, default=None)
+    parser.add_argument("--target-noise-source", default="target_noise_v1")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--max-per-label", type=int, default=300)
     parser.add_argument("--seed", type=int, default=42)
@@ -286,6 +288,7 @@ def main() -> int:
             esc50_root=args.esc50_root,
             urbansound8k_metadata=args.urbansound8k_metadata,
             urbansound8k_audio_root=args.urbansound8k_audio_root,
+            target_noise_source=args.target_noise_source,
             output=args.output,
             max_per_label=args.max_per_label,
             seed=args.seed,

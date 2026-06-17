@@ -230,6 +230,25 @@ def test_target_noise_project_relative_path_resolves_from_cwd(tmp_path: Path, mo
     assert (output.parent / rows[0]["input_path"]).resolve() == mixed.resolve()
 
 
+def test_target_noise_source_name_can_be_configured(tmp_path: Path) -> None:
+    output = tmp_path / "data" / "manifests" / "audio_router.local.csv"
+    target_manifest = tmp_path / "outputs" / "target-noise-v2" / "manifests" / "target_noise_suppression.csv"
+    _write_target_noise_manifest(target_manifest, count=3)
+
+    build_audio_router_manifest(
+        target_noise_manifest=target_manifest,
+        target_noise_source="target_noise_v2_source_disjoint",
+        output=output,
+        max_per_label=10,
+        seed=3,
+    )
+
+    rows = _read_rows(output)
+    assert rows
+    assert {row["router_label"] for row in rows} == {SPEECH_NOISE}
+    assert {row["source"] for row in rows} == {"target_noise_v2_source_disjoint"}
+
+
 def test_build_audio_router_manifest_raises_when_no_rows_are_produced(tmp_path: Path) -> None:
     try:
         build_audio_router_manifest(output=tmp_path / "audio_router.csv")
