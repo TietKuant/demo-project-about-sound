@@ -76,6 +76,7 @@ FEATURE_ROW_COLUMNS = [
     "notes",
     "error",
 ]
+CLASS_WEIGHTING_CHOICES = {"none", "balanced"}
 
 
 def _set_seed(seed: int) -> None:
@@ -291,6 +292,29 @@ def _logit_predictions(logits: torch.Tensor) -> list[int]:
     return torch.argmax(logits, dim=1).cpu().numpy().astype(int).tolist()
 
 
+def _compute_balanced_class_weights(
+    *,
+    train_rows: list[dict[str, str]],
+    labels: list[str],
+) -> dict[str, float]:
+    counts = Counter(row["router_label"] for row in train_rows)
+    total_train_rows = len(train_rows)
+    num_classes = len(labels)
+    weights: dict[str, float] = {}
+    for label in labels:
+        count = counts.get(label, 0)
+        if count == 0:
+            raise ValueError(f"Cannot compute balanced class weight for label without train rows: {label}")
+        weights[label] = float(total_train_rows / (num_classes * count))
+    return weights
+
+
+def _class_weight_tensor(class_weights: dict[str, float], labels: list[str]) -> torch.Tensor | None:
+    if not class_weights:
+        return None
+    return torch.tensor([class_weights[label] for label in labels], dtype=torch.float32)
+
+
 def _count_by_fields(rows: list[dict[str, str]], fields: tuple[str, ...]) -> dict[str, int]:
     counts: Counter[str] = Counter("|".join(row[field] for field in fields) for row in rows)
     return dict(sorted(counts.items()))
@@ -328,6 +352,70 @@ def _test_metrics_by_source(
     return metrics
 
 
+def _prediction_confidence_by_group(
+    *,
+    rows: list[dict[str, str]],
+    truth: list[int],
+    probabilities: list[list[float]],
+    index_to_label: dict[int, str],
+    group_field: str,
+) -> dict[str, dict[str, float | int]]:
+    grouped: dict[str, list[tuple[float, float]]] = {}
+    for row, true_index, row_probabilities in zip(rows, truth, probabilities):
+        if group_field == "router_label":
+            group_key = index_to_label[true_index]
+        else:
+            group_key = row[group_field]
+        confidence = max(row_probabilities)
+        true_probability = row_probabilities[true_index]
+        grouped.setdefault(group_key, []).append((confidence, true_probability))
+
+    diagnostics: dict[str, dict[str, float | int]] = {}
+    for group_key, values in sorted(grouped.items()):
+        diagnostics[group_key] = {
+            "row_count": len(values),
+            "mean_confidence": _safe_divide(sum(value[0] for value in values), len(values)),
+            "mean_true_label_probability": _safe_divide(sum(value[1] for value in values), len(values)),
+        }
+    return diagnostics
+
+
+def _write_test_predictions(
+    *,
+    path: Path,
+    rows: list[dict[str, str]],
+    truth: list[int],
+    predictions: list[int],
+    probabilities: list[list[float]],
+    index_to_label: dict[int, str],
+) -> None:
+    labels = list(index_to_label.values())
+    fieldnames = [
+        "sample_id",
+        "source",
+        "true_label",
+        "predicted_label",
+        "correct",
+        "confidence",
+        *[f"prob_{label}" for label in labels],
+    ]
+    with path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+        for row, true_index, predicted_index, row_probabilities in zip(rows, truth, predictions, probabilities):
+            output_row = {
+                "sample_id": row["sample_id"],
+                "source": row["source"],
+                "true_label": index_to_label[true_index],
+                "predicted_label": index_to_label[predicted_index],
+                "correct": str(true_index == predicted_index).lower(),
+                "confidence": f"{max(row_probabilities):.10f}",
+            }
+            for index, label in index_to_label.items():
+                output_row[f"prob_{label}"] = f"{row_probabilities[index]:.10f}"
+            writer.writerow(output_row)
+
+
 def train_audio_router(
     *,
     manifest_path: Path,
@@ -335,12 +423,15 @@ def train_audio_router(
     epochs: int = 50,
     learning_rate: float = 0.01,
     seed: int = 42,
+    class_weighting: str = "none",
 ) -> Path:
     """Train and evaluate a small audio router baseline."""
     if epochs <= 0:
         raise ValueError("--epochs must be greater than zero.")
     if learning_rate <= 0:
         raise ValueError("--learning-rate must be greater than zero.")
+    if class_weighting not in CLASS_WEIGHTING_CHOICES:
+        raise ValueError(f"--class-weighting must be one of: {', '.join(sorted(CLASS_WEIGHTING_CHOICES))}")
 
     _set_seed(seed)
     output = Path(output_dir)
@@ -359,6 +450,14 @@ def train_audio_router(
     all_features = _feature_matrix(rows, training_feature_columns)
     train_indices = [index for index, row in enumerate(rows) if row["split"] == "train"]
     test_indices = [index for index, row in enumerate(rows) if row["split"] == "test"]
+    train_rows = [rows[index] for index in train_indices]
+    test_rows = [rows[index] for index in test_indices]
+    class_weights = (
+        _compute_balanced_class_weights(train_rows=train_rows, labels=labels)
+        if class_weighting == "balanced"
+        else {}
+    )
+    class_weight_tensor = _class_weight_tensor(class_weights, labels)
     normalized_features, _raw_train_features, feature_stats = _normalize(
         all_features[train_indices],
         all_features,
@@ -378,7 +477,7 @@ def train_audio_router(
         model.train()
         optimizer.zero_grad()
         train_logits = model(x[train_index_tensor])
-        train_loss = F.cross_entropy(train_logits, y[train_index_tensor])
+        train_loss = F.cross_entropy(train_logits, y[train_index_tensor], weight=class_weight_tensor)
         train_loss.backward()
         optimizer.step()
 
@@ -405,8 +504,8 @@ def train_audio_router(
         test_predictions = _logit_predictions(test_logits)
         train_accuracy = _accuracy_from_indices(train_truth, train_predictions)
         test_accuracy = _accuracy_from_indices(test_truth, test_predictions)
+        test_probabilities = F.softmax(test_logits, dim=1).cpu().numpy().astype(float).tolist()
 
-    test_rows = [rows[index] for index in test_indices]
     train_classification_report = _classification_report(
         truth=train_truth,
         predictions=train_predictions,
@@ -415,6 +514,14 @@ def train_audio_router(
     test_classification_report = _classification_report(
         truth=test_truth,
         predictions=test_predictions,
+        index_to_label=index_to_label,
+    )
+    _write_test_predictions(
+        path=output / "test_predictions.csv",
+        rows=test_rows,
+        truth=test_truth,
+        predictions=test_predictions,
+        probabilities=test_probabilities,
         index_to_label=index_to_label,
     )
 
@@ -427,6 +534,8 @@ def train_audio_router(
         "feature_columns": training_feature_columns,
         "excluded_feature_columns": EXCLUDED_FEATURE_COLUMNS,
         "feature_policy_notes": FEATURE_POLICY_NOTES,
+        "class_weighting": class_weighting,
+        "class_weights": class_weights,
         "train_accuracy": train_accuracy,
         "test_accuracy": test_accuracy,
         "train_classification_report": train_classification_report,
@@ -448,6 +557,20 @@ def train_audio_router(
             predictions=test_predictions,
             index_to_label=index_to_label,
         ),
+        "test_prediction_confidence_by_label": _prediction_confidence_by_group(
+            rows=test_rows,
+            truth=test_truth,
+            probabilities=test_probabilities,
+            index_to_label=index_to_label,
+            group_field="router_label",
+        ),
+        "test_prediction_confidence_by_source": _prediction_confidence_by_group(
+            rows=test_rows,
+            truth=test_truth,
+            probabilities=test_probabilities,
+            index_to_label=index_to_label,
+            group_field="source",
+        ),
         "confusion_matrix": test_classification_report["confusion_matrix"],
     }
 
@@ -458,6 +581,8 @@ def train_audio_router(
                 "feature_columns": training_feature_columns,
                 "label_to_index": label_to_index,
                 "feature_stats": feature_stats,
+                "class_weighting": class_weighting,
+                "class_weights": class_weights,
             },
         },
         output / "checkpoint.pt",
@@ -487,6 +612,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--learning-rate", type=float, default=0.01)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--class-weighting", choices=sorted(CLASS_WEIGHTING_CHOICES), default="none")
     return parser
 
 
@@ -500,6 +626,7 @@ def main() -> int:
             epochs=args.epochs,
             learning_rate=args.learning_rate,
             seed=args.seed,
+            class_weighting=args.class_weighting,
         )
         print(f"Wrote audio router training artifacts: {output_dir}")
         return 0

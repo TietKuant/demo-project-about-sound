@@ -11,7 +11,12 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from scripts.train_audio_router import FEATURE_COLUMNS, _classification_report, train_audio_router
+from scripts.train_audio_router import (
+    FEATURE_COLUMNS,
+    _classification_report,
+    _compute_balanced_class_weights,
+    train_audio_router,
+)
 
 
 def _write_sine_wav(path: Path, frequency: float, duration_sec: float = 0.12, sample_rate: int = 8000) -> None:
@@ -87,6 +92,38 @@ def _write_v4_manifest(manifest: Path) -> None:
             )
 
 
+def _write_imbalanced_manifest(manifest: Path) -> None:
+    audio_dir = manifest.parent / "audio"
+    rows = [
+        ("speech_train_0", "speech_noise", "synthetic_speech", "train", 220.0),
+        ("speech_train_1", "speech_noise", "synthetic_speech", "train", 230.0),
+        ("speech_train_2", "speech_noise", "synthetic_speech", "train", 240.0),
+        ("speech_train_3", "speech_noise", "synthetic_speech", "train", 250.0),
+        ("speech_test", "speech_noise", "synthetic_speech", "test", 260.0),
+        ("music_train", "music", "synthetic_music", "train", 880.0),
+        ("music_test", "music", "synthetic_music", "test", 930.0),
+        ("env_train", "environment_noise", "synthetic_env", "train", 1800.0),
+        ("env_test", "environment_noise", "synthetic_env", "test", 1900.0),
+    ]
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    with manifest.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=["sample_id", "input_path", "router_label", "source", "split", "notes"])
+        writer.writeheader()
+        for sample_id, label, source, split, frequency in rows:
+            audio_path = audio_dir / f"{sample_id}.wav"
+            _write_sine_wav(audio_path, frequency)
+            writer.writerow(
+                {
+                    "sample_id": sample_id,
+                    "input_path": f"audio/{audio_path.name}",
+                    "router_label": label,
+                    "source": source,
+                    "split": split,
+                    "notes": f"frequency={frequency}",
+                }
+            )
+
+
 def test_train_audio_router_writes_artifacts(tmp_path: Path) -> None:
     manifest = tmp_path / "data" / "manifests" / "audio_router.local.csv"
     output_dir = tmp_path / "outputs" / "audio-router"
@@ -108,6 +145,7 @@ def test_train_audio_router_writes_artifacts(tmp_path: Path) -> None:
         "feature_stats.json",
         "feature_rows.csv",
         "loss_curve.csv",
+        "test_predictions.csv",
     ):
         assert (output_dir / filename).exists()
 
@@ -122,6 +160,8 @@ def test_train_audio_router_writes_artifacts(tmp_path: Path) -> None:
     assert "duration_sec" not in metrics["feature_columns"]
     assert "duration_sec" in metrics["excluded_feature_columns"]
     assert metrics["feature_policy_notes"]
+    assert metrics["class_weighting"] == "none"
+    assert metrics["class_weights"] == {}
     assert metrics["manifest_rows"] == 6
     assert metrics["successful_feature_rows"] == 6
     assert metrics["failed_feature_rows"] == 0
@@ -149,6 +189,10 @@ def test_train_audio_router_writes_artifacts(tmp_path: Path) -> None:
     assert "accuracy" in test_report
     assert set(test_report["per_class"]) == {"speech_noise", "music", "environment_noise"}
     assert "test_metrics_by_source" in metrics
+    assert "test_prediction_confidence_by_label" in metrics
+    assert "test_prediction_confidence_by_source" in metrics
+    assert set(metrics["test_prediction_confidence_by_label"]) == {"speech_noise", "music", "environment_noise"}
+    assert set(metrics["test_prediction_confidence_by_source"]) == {"synthetic_speech", "synthetic_music", "synthetic_env"}
     assert set(metrics["test_metrics_by_source"]) == {"synthetic_speech", "synthetic_music", "synthetic_env"}
     for source in ("synthetic_speech", "synthetic_music", "synthetic_env"):
         source_metrics = metrics["test_metrics_by_source"][source]
@@ -166,6 +210,8 @@ def test_train_audio_router_writes_artifacts(tmp_path: Path) -> None:
     assert checkpoint["config"]["feature_columns"] == metrics["feature_columns"]
     assert "duration_sec" not in checkpoint["config"]["feature_columns"]
     assert set(checkpoint["config"]["feature_stats"]) == set(metrics["feature_columns"])
+    assert checkpoint["config"]["class_weighting"] == "none"
+    assert checkpoint["config"]["class_weights"] == {}
 
     with (output_dir / "feature_rows.csv").open(newline="", encoding="utf-8") as csv_file:
         reader = csv.DictReader(csv_file)
@@ -183,6 +229,64 @@ def test_train_audio_router_writes_artifacts(tmp_path: Path) -> None:
     assert feature_rows[0]["rms_std"]
     assert feature_rows[0]["zcr_std"]
     assert feature_rows[0]["silence_ratio"]
+
+    with (output_dir / "test_predictions.csv").open(newline="", encoding="utf-8") as csv_file:
+        reader = csv.DictReader(csv_file)
+        assert reader.fieldnames is not None
+        for column in ("sample_id", "source", "true_label", "predicted_label", "correct", "confidence"):
+            assert column in reader.fieldnames
+        for label in ("speech_noise", "music", "environment_noise"):
+            assert f"prob_{label}" in reader.fieldnames
+        prediction_rows = list(reader)
+    assert len(prediction_rows) == 3
+    assert prediction_rows[0]["confidence"]
+
+
+def test_compute_balanced_class_weights_uses_train_counts() -> None:
+    weights = _compute_balanced_class_weights(
+        train_rows=[
+            {"router_label": "speech_noise"},
+            {"router_label": "speech_noise"},
+            {"router_label": "speech_noise"},
+            {"router_label": "speech_noise"},
+            {"router_label": "music"},
+            {"router_label": "environment_noise"},
+        ],
+        labels=["environment_noise", "music", "speech_noise"],
+    )
+
+    assert weights == {
+        "environment_noise": 2.0,
+        "music": 2.0,
+        "speech_noise": 0.5,
+    }
+
+
+def test_train_audio_router_balanced_class_weighting_writes_metrics(tmp_path: Path) -> None:
+    manifest = tmp_path / "data" / "manifests" / "audio_router_imbalanced.local.csv"
+    output_dir = tmp_path / "outputs" / "audio-router-balanced"
+    _write_imbalanced_manifest(manifest)
+
+    train_audio_router(
+        manifest_path=manifest,
+        output_dir=output_dir,
+        epochs=2,
+        learning_rate=0.01,
+        seed=456,
+        class_weighting="balanced",
+    )
+
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["class_weighting"] == "balanced"
+    assert metrics["class_weights"] == {
+        "environment_noise": 2.0,
+        "music": 2.0,
+        "speech_noise": 0.5,
+    }
+    checkpoint = torch.load(output_dir / "checkpoint.pt", map_location="cpu")
+    assert checkpoint["config"]["class_weighting"] == "balanced"
+    assert checkpoint["config"]["class_weights"] == metrics["class_weights"]
+    assert (output_dir / "test_predictions.csv").exists()
 
 
 def test_train_audio_router_supports_v4_content_label_schema(tmp_path: Path) -> None:
