@@ -155,6 +155,58 @@ def test_v3_style_row_conversion_for_target_noise() -> None:
     assert row["snr_db"] == "5"
     assert row["clean_source_id"] == "tn_001"
     assert row["noise_source_id"] == ""
+    assert row["source_dataset"] == "target_noise_v1"
+    assert row["is_synthetic"] == "true"
+
+
+def test_v3_conversion_for_renamed_target_noise_source() -> None:
+    row = convert_v3_row_to_v4(
+        {
+            "sample_id": "00544_p232_012_car_horn_71309-1-0-1_snr0",
+            "input_path": "mixed/test/00544_p232_012_car_horn_71309-1-0-1_snr0.wav",
+            "router_label": "speech_noise",
+            "source": "target_noise_v2_source_disjoint",
+            "split": "test",
+            "notes": "snr_db=0",
+        },
+        source_dataset="fallback",
+        taxonomy_version="audio-router-v4",
+        features_version="pending",
+        normalization_version="pending",
+    )
+
+    assert row["source_dataset"] == "target_noise_v2_source_disjoint"
+    assert row["content_label"] == "speech_target_noise"
+    assert row["route_target"] == "target_noise_suppression"
+    assert row["engine_target"] == "target_noise_suppressor"
+    assert row["candidate_tasks"] == "target_noise_suppression"
+    assert row["target_noise_label"] == "car_horn"
+    assert row["noise_source_id"] == "71309-1-0-1"
+    assert row["clean_source_id"] == "00544_p232_012_car_horn_71309-1-0-1_snr0"
+    assert row["is_synthetic"] == "true"
+
+
+def test_v3_conversion_unknown_non_target_source_stays_unknown() -> None:
+    row = convert_v3_row_to_v4(
+        {
+            "sample_id": "unknown_001",
+            "input_path": "unknown/file.wav",
+            "router_label": "speech_noise",
+            "source": "new_dataset",
+            "split": "test",
+            "notes": "",
+        },
+        source_dataset="fallback",
+        taxonomy_version="audio-router-v4",
+        features_version="pending",
+        normalization_version="pending",
+    )
+
+    assert row["source_dataset"] == "new_dataset"
+    assert row["content_label"] == "unknown_mixed"
+    assert row["route_target"] == "abstain"
+    assert row["engine_target"] == "none"
+    assert row["is_synthetic"] == "false"
 
 
 def test_target_noise_filename_parser_extracts_label_and_noise_source_id() -> None:

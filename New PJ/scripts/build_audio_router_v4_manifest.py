@@ -109,6 +109,16 @@ SOURCE_TO_CONTENT_LABEL = {
 }
 
 
+def _is_target_noise_source(source: str) -> bool:
+    return source.startswith("target_noise")
+
+
+def _content_label_for_source(source: str) -> str:
+    if _is_target_noise_source(source):
+        return "speech_target_noise"
+    return SOURCE_TO_CONTENT_LABEL.get(source, "unknown_mixed")
+
+
 def encode_candidate_tasks(tasks: list[str]) -> str:
     """Encode task ids as a semicolon-separated CSV value."""
     invalid = [task for task in tasks if task not in VALID_TASK_IDS]
@@ -373,7 +383,7 @@ def convert_v3_row_to_v4(
     source = (row.get("source") or source_dataset).strip()
     notes = row.get("notes", "").strip()
     parsed_notes = _parse_notes(notes)
-    content_label = SOURCE_TO_CONTENT_LABEL.get(source, "unknown_mixed")
+    content_label = _content_label_for_source(source)
     sample_id = row.get("sample_id", "").strip()
     input_path = row.get("input_path", "").strip()
     target_noise_label = parsed_notes.get("noise_label", "")
@@ -406,13 +416,13 @@ def convert_v3_row_to_v4(
             "label_confidence": "1.0" if content_label != "unknown_mixed" else "0.5",
             "target_noise_label": target_noise_label,
             "snr_db": parsed_notes.get("snr_db", ""),
-            "is_synthetic": "true" if source == "target_noise_v1" else "false",
+            "is_synthetic": "true" if _is_target_noise_source(source) else "false",
             "features_version": features_version,
             "feature_status": "pending",
             "notes": notes,
         }
     )
-    if source == "target_noise_v1":
+    if _is_target_noise_source(source):
         v4_row["clean_source_id"] = sample_id
         v4_row["noise_source_id"] = parsed_noise_source_id
     return {column: v4_row.get(column, "") for column in MANIFEST_V4_COLUMNS}
