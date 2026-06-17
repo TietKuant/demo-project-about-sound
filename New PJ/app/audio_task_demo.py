@@ -40,7 +40,7 @@ CONTENT_INTENTS = [AUTO_INTENT, SPEECH_INTENT, MUSIC_INTENT, UNKNOWN_INTENT]
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 MUSIC_TASKS = {EXTRACT_VOCALS, REMOVE_VOCALS}
 ROUTER_CHECKPOINT_ENV_VAR = "AUDIO_ROUTER_CHECKPOINT"
-ROUTER_CONFIDENCE_THRESHOLD = 0.55
+ROUTER_CONFIDENCE_THRESHOLD = 0.90
 DEMO_CSS = """
 .gradio-container {
   max-width: 1080px !important;
@@ -196,6 +196,13 @@ def _optional_router_result(input_path: Path) -> dict[str, object]:
             "router_status": "disabled",
             "predicted_label": "",
             "confidence": None,
+            "accepted": False,
+            "confidence_threshold": ROUTER_CONFIDENCE_THRESHOLD,
+            "route_target": "manual_required",
+            "engine_target": "none",
+            "recommended_task": None,
+            "decision_reason": "router_checkpoint_not_configured",
+            "warnings": [],
             "probabilities": {},
             "error": f"{ROUTER_CHECKPOINT_ENV_VAR} is not set.",
         }
@@ -206,6 +213,13 @@ def _optional_router_result(input_path: Path) -> dict[str, object]:
             "router_status": "disabled",
             "predicted_label": "",
             "confidence": None,
+            "accepted": False,
+            "confidence_threshold": ROUTER_CONFIDENCE_THRESHOLD,
+            "route_target": "manual_required",
+            "engine_target": "none",
+            "recommended_task": None,
+            "decision_reason": "router_checkpoint_missing",
+            "warnings": [],
             "probabilities": {},
             "error": f"Router checkpoint not found: {checkpoint_path}",
         }
@@ -218,6 +232,13 @@ def _optional_router_result(input_path: Path) -> dict[str, object]:
             "router_status": "enabled",
             "predicted_label": summary.get("predicted_label", ""),
             "confidence": summary.get("confidence"),
+            "accepted": summary.get("accepted"),
+            "confidence_threshold": summary.get("confidence_threshold"),
+            "route_target": summary.get("route_target"),
+            "engine_target": summary.get("engine_target"),
+            "recommended_task": summary.get("recommended_task"),
+            "decision_reason": summary.get("decision_reason"),
+            "warnings": summary.get("warnings", []),
             "probabilities": summary.get("probabilities", {}),
             "error": "",
         }
@@ -226,6 +247,13 @@ def _optional_router_result(input_path: Path) -> dict[str, object]:
             "router_status": "failed",
             "predicted_label": "",
             "confidence": None,
+            "accepted": False,
+            "confidence_threshold": ROUTER_CONFIDENCE_THRESHOLD,
+            "route_target": "manual_required",
+            "engine_target": "none",
+            "recommended_task": None,
+            "decision_reason": "router_failed",
+            "warnings": [],
             "probabilities": {},
             "error": str(exc),
         }
@@ -253,18 +281,20 @@ def _recommend_with_router(content_intent: str, router_result: dict[str, object]
     if router_status != "enabled":
         return _recommend_for_intent(content_intent)
 
-    predicted_label = str(router_result.get("predicted_label", ""))
-    confidence_raw = router_result.get("confidence")
-    confidence = confidence_raw if isinstance(confidence_raw, (int, float)) else 0.0
-
-    if confidence < ROUTER_CONFIDENCE_THRESHOLD:
+    if router_result.get("accepted") is not True:
         fallback_task, fallback_reason = _recommend_for_intent(content_intent)
+        decision_reason = str(router_result.get("decision_reason") or "router_prediction_not_accepted")
+        threshold = router_result.get("confidence_threshold")
+        threshold_text = f" at threshold `{float(threshold):.2f}`" if isinstance(threshold, (int, float)) else ""
         return fallback_task, (
-            f"Router confidence `{confidence:.3f}` is below `{ROUTER_CONFIDENCE_THRESHOLD:.2f}`, "
+            f"Router prediction is not trusted (`{decision_reason}`{threshold_text}), "
             f"so the demo falls back to content intent. {fallback_reason}"
         )
 
-    if predicted_label == "music":
+    predicted_label = str(router_result.get("predicted_label", ""))
+    router_task = router_result.get("recommended_task")
+
+    if predicted_label in {"music", "music_with_vocals"}:
         if content_intent == MUSIC_INTENT:
             return EXTRACT_VOCALS, (
                 "Manual music intent is selected. Router also predicts music, so `extract_vocals` is suggested by "
@@ -272,7 +302,7 @@ def _recommend_with_router(content_intent: str, router_result: dict[str, object]
             )
         return _recommend_for_intent(content_intent)
 
-    if predicted_label == "speech_noise":
+    if predicted_label in {"speech_noise", "speech_noisy_general"}:
         if content_intent == SPEECH_INTENT:
             return CLEAN_VOICE, (
                 "Manual speech/noisy speech intent is selected. Router also predicts noisy speech, so `clean_voice` "
@@ -280,7 +310,15 @@ def _recommend_with_router(content_intent: str, router_result: dict[str, object]
             )
         return _recommend_for_intent(content_intent)
 
-    if predicted_label == "environment_noise":
+    if predicted_label == "speech_target_noise":
+        if content_intent == SPEECH_INTENT and router_task == TARGET_NOISE_SUPPRESSION:
+            return TARGET_NOISE_SUPPRESSION, (
+                "Manual speech/noisy speech intent is selected and the accepted router evidence points to the "
+                "experimental target-noise suppressor. Use this only for supported target-noise examples."
+            )
+        return _recommend_for_intent(content_intent)
+
+    if predicted_label in {"environment_noise", "environment_only"}:
         task, intent_reason = _recommend_for_intent(content_intent)
         return task, (
             "Router predicts environment noise, so treat the recommendation cautiously. "
@@ -315,6 +353,10 @@ def analyze_demo_input(
     recommendation_text = f"`{recommended_task}`" if recommended_task else "No automatic recommendation"
     router_confidence = router_result.get("confidence")
     confidence_text = f"{float(router_confidence):.3f}" if isinstance(router_confidence, (int, float)) else "n/a"
+    router_warnings = router_result.get("warnings")
+    warnings_text = ", ".join(str(warning) for warning in router_warnings) if isinstance(router_warnings, list) else "n/a"
+    if not warnings_text:
+        warnings_text = "n/a"
 
     lines = [
         "### Preflight analysis",
@@ -322,6 +364,12 @@ def analyze_demo_input(
         f"- **Router status:** `{router_result.get('router_status', 'disabled')}`",
         f"- **Router predicted label:** `{router_result.get('predicted_label', '') or 'n/a'}`",
         f"- **Router confidence:** `{confidence_text}`",
+        f"- **Router accepted:** `{str(router_result.get('accepted', 'n/a')).lower()}`",
+        f"- **Router threshold:** `{router_result.get('confidence_threshold', 'n/a')}`",
+        f"- **Router route target:** `{router_result.get('route_target', 'n/a')}`",
+        f"- **Router engine target:** `{router_result.get('engine_target', 'n/a')}`",
+        f"- **Router decision reason:** `{router_result.get('decision_reason', 'n/a')}`",
+        f"- **Router warnings:** `{warnings_text}`",
         f"- **Router probabilities:** `{_probability_summary(router_result.get('probabilities'))}`",
         f"- **Content intent:** `{content_intent}`",
         f"- **Profile notes:** {' '.join(profile_notes)}",

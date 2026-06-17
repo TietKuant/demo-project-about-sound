@@ -96,7 +96,7 @@ def test_run_audio_router_writes_summary(tmp_path: Path) -> None:
     assert written["predicted_label"] in {"speech_noise", "music", "environment_noise"}
     assert set(written["probabilities"]) == {"speech_noise", "music", "environment_noise"}
     assert isinstance(written["confidence"], float)
-    assert written["confidence_threshold"] == 0.55
+    assert written["confidence_threshold"] == 0.90
     assert "accepted" in written
     assert "route_target" in written
     assert "engine_target" in written
@@ -120,7 +120,7 @@ def test_run_audio_router_writes_summary(tmp_path: Path) -> None:
 
 
 def test_build_router_decision_low_confidence_abstains() -> None:
-    decision = build_router_decision("music_with_vocals", 0.2, confidence_threshold=0.55)
+    decision = build_router_decision("music_with_vocals", 0.75)
 
     assert decision["accepted"] is False
     assert decision["route_target"] == "manual_required"
@@ -131,7 +131,7 @@ def test_build_router_decision_low_confidence_abstains() -> None:
 
 
 def test_build_router_decision_target_noise_maps_to_experimental_task() -> None:
-    decision = build_router_decision("speech_target_noise", 0.9, confidence_threshold=0.55)
+    decision = build_router_decision("speech_target_noise", 0.95)
 
     assert decision["accepted"] is True
     assert decision["route_target"] == "target_noise_suppression"

@@ -183,8 +183,15 @@ def test_analyze_demo_input_with_router_speech_noise_recommends_clean_voice(tmp_
     router_result = {
         "router_status": "enabled",
         "predicted_label": "speech_noise",
-        "confidence": 0.82,
-        "probabilities": {"speech_noise": 0.82, "music": 0.10, "environment_noise": 0.08},
+        "confidence": 0.92,
+        "accepted": True,
+        "confidence_threshold": 0.90,
+        "route_target": "clean_voice",
+        "engine_target": "deepfilternet",
+        "recommended_task": CLEAN_VOICE,
+        "decision_reason": "accepted_router_prediction",
+        "warnings": [],
+        "probabilities": {"speech_noise": 0.92, "music": 0.05, "environment_noise": 0.03},
         "error": "",
     }
 
@@ -197,7 +204,7 @@ def test_analyze_demo_input_with_router_speech_noise_recommends_clean_voice(tmp_
     assert recommended_task == CLEAN_VOICE
     assert "Router status:** `enabled`" in markdown
     assert "Router predicted label:** `speech_noise`" in markdown
-    assert "0.820" in markdown
+    assert "0.920" in markdown
     assert "target_noise_suppression` is experimental" in markdown
 
 
@@ -207,8 +214,15 @@ def test_analyze_demo_input_with_router_music_and_manual_music_recommends_extrac
     router_result = {
         "router_status": "enabled",
         "predicted_label": "music",
-        "confidence": 0.77,
-        "probabilities": {"speech_noise": 0.11, "music": 0.77, "environment_noise": 0.12},
+        "confidence": 0.93,
+        "accepted": True,
+        "confidence_threshold": 0.90,
+        "route_target": "manual_required",
+        "engine_target": "demucs",
+        "recommended_task": EXTRACT_VOCALS,
+        "decision_reason": "accepted_router_prediction",
+        "warnings": ["manual_music_task_selection_required"],
+        "probabilities": {"speech_noise": 0.04, "music": 0.93, "environment_noise": 0.03},
         "error": "",
     }
 
@@ -220,8 +234,41 @@ def test_analyze_demo_input_with_router_music_and_manual_music_recommends_extrac
 
     assert recommended_task == EXTRACT_VOCALS
     assert "Router predicted label:** `music`" in markdown
-    assert "music=0.770" in markdown
+    assert "music=0.930" in markdown
     assert "remove_vocals` is also valid" in markdown
+
+
+def test_analyze_demo_input_rejects_unaccepted_router_target_noise_prediction(tmp_path: Path) -> None:
+    input_path = tmp_path / "speech.wav"
+    input_path.write_bytes(b"audio")
+    router_result = {
+        "router_status": "enabled",
+        "predicted_label": "speech_target_noise",
+        "confidence": 0.75,
+        "accepted": False,
+        "confidence_threshold": 0.90,
+        "route_target": "manual_required",
+        "engine_target": "none",
+        "recommended_task": None,
+        "decision_reason": "low_confidence",
+        "warnings": ["low_confidence_router_prediction"],
+        "probabilities": {
+            "speech_target_noise": 0.75,
+            "music_with_vocals": 0.18,
+            "environment_only": 0.07,
+        },
+        "error": "",
+    }
+
+    with (
+        patch("app.audio_task_demo._extract_feature_row", return_value=_feature_row()),
+        patch("app.audio_task_demo._optional_router_result", return_value=router_result),
+    ):
+        markdown, _table, recommended_task = analyze_demo_input(input_path, SPEECH_INTENT)
+
+    assert recommended_task == CLEAN_VOICE
+    assert "Router accepted:** `false`" in markdown
+    assert "Router prediction is not trusted" in markdown
 
 
 def test_auto_mode_with_router_environment_noise_returns_no_recommendation(tmp_path: Path) -> None:

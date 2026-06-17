@@ -24,7 +24,9 @@ from scripts.extract_audio_features import _audio_for_features, _features
 from src.router.audio_router_model import AudioRouterMLP
 
 
-DEFAULT_CONFIDENCE_THRESHOLD = 0.55
+# Conservative default from real-audio validation: lower thresholds accepted
+# overconfident wrong routes, so runtime routing evidence now requires 0.90.
+DEFAULT_CONFIDENCE_THRESHOLD = 0.90
 ROUTER_DECISIONS = {
     "environment_only": {
         "route_target": "out_of_scope",
