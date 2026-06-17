@@ -28,7 +28,22 @@ from scripts.extract_audio_features import _audio_for_features, _features
 from src.router.audio_router_model import AudioRouterMLP
 
 
-REQUIRED_COLUMNS = {"sample_id", "input_path", "router_label", "source", "split", "notes"}
+V3_REQUIRED_COLUMNS = {"sample_id", "input_path", "router_label", "source", "split", "notes"}
+V4_REQUIRED_COLUMNS = {"sample_id", "input_path", "content_label", "source_dataset", "split", "notes"}
+MANIFEST_SCHEMAS = [
+    {
+        "manifest_schema": "audio_router_v3",
+        "required_columns": V3_REQUIRED_COLUMNS,
+        "label_column": "router_label",
+        "source_column": "source",
+    },
+    {
+        "manifest_schema": "audio_router_v4",
+        "required_columns": V4_REQUIRED_COLUMNS,
+        "label_column": "content_label",
+        "source_column": "source_dataset",
+    },
+]
 FEATURE_COLUMNS = [
     "duration_sec",
     "rms_energy",
@@ -69,17 +84,48 @@ def _set_seed(seed: int) -> None:
     torch.manual_seed(seed)
 
 
-def _load_manifest(manifest_path: Path) -> list[dict[str, str]]:
+def _detect_manifest_schema(fieldnames: list[str] | None) -> dict[str, object]:
+    columns = set(fieldnames or [])
+    for schema in MANIFEST_SCHEMAS:
+        required_columns = schema["required_columns"]
+        if isinstance(required_columns, set) and required_columns <= columns:
+            return schema
+
+    missing_descriptions = []
+    for schema in MANIFEST_SCHEMAS:
+        required_columns = schema["required_columns"]
+        if isinstance(required_columns, set):
+            missing = ", ".join(sorted(required_columns - columns))
+            missing_descriptions.append(f"{schema['manifest_schema']} missing: {missing or 'none'}")
+    raise ValueError(
+        "Audio router manifest must match either the V3 schema "
+        "(sample_id,input_path,router_label,source,split,notes) or the V4 schema "
+        "(sample_id,input_path,content_label,source_dataset,split,notes). "
+        + "; ".join(missing_descriptions)
+    )
+
+
+def _normalize_manifest_row(row: dict[str, str], schema: dict[str, object]) -> dict[str, str]:
+    label_column = str(schema["label_column"])
+    source_column = str(schema["source_column"])
+    return {
+        "sample_id": row["sample_id"],
+        "input_path": row["input_path"],
+        "router_label": row[label_column],
+        "source": row[source_column],
+        "split": row["split"],
+        "notes": row["notes"],
+    }
+
+
+def _load_manifest(manifest_path: Path) -> tuple[list[dict[str, str]], dict[str, object]]:
     with Path(manifest_path).open(newline="", encoding="utf-8") as csv_file:
         reader = csv.DictReader(csv_file)
-        missing_columns = REQUIRED_COLUMNS - set(reader.fieldnames or [])
-        if missing_columns:
-            missing = ", ".join(sorted(missing_columns))
-            raise ValueError(f"Audio router manifest is missing required columns: {missing}")
+        schema = _detect_manifest_schema(reader.fieldnames)
         rows = list(reader)
     if not rows:
         raise ValueError(f"Audio router manifest is empty: {manifest_path}")
-    return rows
+    return [_normalize_manifest_row(row, schema) for row in rows], schema
 
 
 def _resolve_input_path(value: str, manifest_path: Path) -> Path:
@@ -89,8 +135,8 @@ def _resolve_input_path(value: str, manifest_path: Path) -> Path:
     return (Path(manifest_path).resolve().parent / path).resolve()
 
 
-def _extract_feature_rows(manifest_path: Path) -> list[dict[str, str]]:
-    manifest_rows = _load_manifest(manifest_path)
+def _extract_feature_rows(manifest_path: Path) -> tuple[list[dict[str, str]], dict[str, object]]:
+    manifest_rows, schema = _load_manifest(manifest_path)
     feature_rows: list[dict[str, str]] = []
     with tempfile.TemporaryDirectory(prefix="audio-router-features-") as temp_dir_name:
         temp_dir = Path(temp_dir_name)
@@ -120,7 +166,7 @@ def _extract_feature_rows(manifest_path: Path) -> list[dict[str, str]]:
             except Exception as exc:
                 row["error"] = str(exc)
             feature_rows.append(row)
-    return feature_rows
+    return feature_rows, schema
 
 
 def _write_feature_rows(path: Path, rows: list[dict[str, str]]) -> None:
@@ -300,7 +346,7 @@ def train_audio_router(
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
 
-    feature_rows = _extract_feature_rows(manifest_path)
+    feature_rows, manifest_schema = _extract_feature_rows(manifest_path)
     _write_feature_rows(output / "feature_rows.csv", feature_rows)
     failed_feature_rows = sum(1 for row in feature_rows if row["status"] != "success")
     rows = _successful_training_rows(feature_rows)
@@ -374,6 +420,10 @@ def train_audio_router(
 
     metrics = {
         "status": "success",
+        "manifest_schema": manifest_schema["manifest_schema"],
+        "label_column": manifest_schema["label_column"],
+        "source_column": manifest_schema["source_column"],
+        "label_values": labels,
         "feature_columns": training_feature_columns,
         "excluded_feature_columns": EXCLUDED_FEATURE_COLUMNS,
         "feature_policy_notes": FEATURE_POLICY_NOTES,

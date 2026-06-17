@@ -55,6 +55,38 @@ def _write_manifest(manifest: Path) -> None:
             )
 
 
+def _write_v4_manifest(manifest: Path) -> None:
+    audio_dir = manifest.parent / "audio"
+    rows = [
+        ("speech_clean_train", "speech_clean", "voicebank_clean", "train", 240.0),
+        ("speech_clean_test", "speech_clean", "voicebank_clean", "test", 280.0),
+        ("music_vocals_train", "music_with_vocals", "musdb18_preview", "train", 720.0),
+        ("music_vocals_test", "music_with_vocals", "musdb18_preview", "test", 760.0),
+        ("env_only_train", "environment_only", "esc50", "train", 1600.0),
+        ("env_only_test", "environment_only", "esc50", "test", 1700.0),
+    ]
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    with manifest.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(
+            csv_file,
+            fieldnames=["sample_id", "input_path", "source_dataset", "split", "content_label", "notes"],
+        )
+        writer.writeheader()
+        for sample_id, label, source_dataset, split, frequency in rows:
+            audio_path = audio_dir / f"{sample_id}.wav"
+            _write_sine_wav(audio_path, frequency)
+            writer.writerow(
+                {
+                    "sample_id": sample_id,
+                    "input_path": f"audio/{audio_path.name}",
+                    "source_dataset": source_dataset,
+                    "split": split,
+                    "content_label": label,
+                    "notes": f"frequency={frequency}",
+                }
+            )
+
+
 def test_train_audio_router_writes_artifacts(tmp_path: Path) -> None:
     manifest = tmp_path / "data" / "manifests" / "audio_router.local.csv"
     output_dir = tmp_path / "outputs" / "audio-router"
@@ -81,6 +113,10 @@ def test_train_audio_router_writes_artifacts(tmp_path: Path) -> None:
 
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["status"] == "success"
+    assert metrics["manifest_schema"] == "audio_router_v3"
+    assert metrics["label_column"] == "router_label"
+    assert metrics["source_column"] == "source"
+    assert set(metrics["label_values"]) == {"speech_noise", "music", "environment_noise"}
     assert "train_accuracy" in metrics
     assert "test_accuracy" in metrics
     assert "duration_sec" not in metrics["feature_columns"]
@@ -149,6 +185,47 @@ def test_train_audio_router_writes_artifacts(tmp_path: Path) -> None:
     assert feature_rows[0]["silence_ratio"]
 
 
+def test_train_audio_router_supports_v4_content_label_schema(tmp_path: Path) -> None:
+    manifest = tmp_path / "data" / "manifests" / "audio_router_v4.local.csv"
+    output_dir = tmp_path / "outputs" / "audio-router-v4"
+    expected_labels = {"speech_clean", "music_with_vocals", "environment_only"}
+    _write_v4_manifest(manifest)
+
+    train_audio_router(
+        manifest_path=manifest,
+        output_dir=output_dir,
+        epochs=2,
+        learning_rate=0.01,
+        seed=321,
+    )
+
+    metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["manifest_schema"] == "audio_router_v4"
+    assert metrics["label_column"] == "content_label"
+    assert metrics["source_column"] == "source_dataset"
+    assert set(metrics["label_values"]) == expected_labels
+    assert set(metrics["counts_by_label"]) == expected_labels
+    assert "duration_sec" not in metrics["feature_columns"]
+    assert "duration_sec" in metrics["excluded_feature_columns"]
+
+    label_mapping = json.loads((output_dir / "label_mapping.json").read_text(encoding="utf-8"))
+    assert set(label_mapping["label_to_index"]) == expected_labels
+
+    checkpoint = torch.load(output_dir / "checkpoint.pt", map_location="cpu")
+    assert set(checkpoint["config"]["label_to_index"]) == expected_labels
+    assert checkpoint["config"]["feature_columns"] == metrics["feature_columns"]
+    assert "duration_sec" not in checkpoint["config"]["feature_columns"]
+
+    with (output_dir / "feature_rows.csv").open(newline="", encoding="utf-8") as csv_file:
+        reader = csv.DictReader(csv_file)
+        assert reader.fieldnames is not None
+        assert "router_label" in reader.fieldnames
+        assert "duration_sec" in reader.fieldnames
+        feature_rows = list(reader)
+    assert {row["router_label"] for row in feature_rows} == expected_labels
+    assert feature_rows[0]["duration_sec"]
+
+
 def test_classification_report_handles_zero_division() -> None:
     report = _classification_report(
         truth=[0, 0, 1],
@@ -170,6 +247,32 @@ def test_classification_report_handles_zero_division() -> None:
     for metric in ("macro_precision", "macro_recall", "macro_f1", "weighted_f1", "accuracy"):
         assert isinstance(report[metric], float)
         assert not math.isnan(report[metric])
+
+
+def test_train_audio_router_rejects_unknown_manifest_schema(tmp_path: Path) -> None:
+    manifest = tmp_path / "bad_router_manifest.csv"
+    output_dir = tmp_path / "out"
+    with manifest.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=["sample_id", "input_path", "split", "notes"])
+        writer.writeheader()
+        writer.writerow(
+            {
+                "sample_id": "bad",
+                "input_path": "missing.wav",
+                "split": "train",
+                "notes": "",
+            }
+        )
+
+    try:
+        train_audio_router(manifest_path=manifest, output_dir=output_dir, epochs=1)
+    except ValueError as exc:
+        message = str(exc)
+        assert "must match either the V3 schema" in message
+        assert "audio_router_v3 missing" in message
+        assert "audio_router_v4 missing" in message
+    else:
+        raise AssertionError("Expected unknown manifest schema to raise ValueError.")
 
 
 def test_train_audio_router_requires_test_rows(tmp_path: Path) -> None:
