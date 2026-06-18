@@ -93,7 +93,8 @@ def test_analyze_demo_input_recommends_clean_voice_for_speech_intent(tmp_path: P
     assert ["duration_sec", "9.000000"] in table
     assert ["rms_energy", "0.0500000000"] in table
     assert "Router status:** `disabled`" in markdown
-    assert "Auto mode does not change the task automatically" in markdown
+    assert "### Processing plan" in markdown
+    assert "Recommended task:** `clean_voice`" in markdown
 
 
 def test_analyze_demo_input_recommends_extract_vocals_for_music_intent(tmp_path: Path) -> None:
@@ -120,8 +121,8 @@ def test_analyze_demo_input_unknown_intent_returns_no_recommendation(tmp_path: P
 
     assert recommended_task is None
     assert ["zero_crossing_rate", "0.0200000000"] in table
-    assert "No automatic recommendation" in markdown
-    assert "unknown" in markdown.lower()
+    assert "Recommended task:** none" in markdown
+    assert "Action:** `analyze_only`" in markdown
 
 
 def test_auto_mode_with_router_music_keeps_current_task_dropdown(tmp_path: Path) -> None:
@@ -149,7 +150,7 @@ def test_auto_mode_with_router_music_keeps_current_task_dropdown(tmp_path: Path)
     assert dropdown_value == CLEAN_VOICE
     assert ["duration_sec", "9.000000"] in table
     assert "Router predicted label:** `music`" in markdown
-    assert "Router output is shown as analysis evidence" in markdown
+    assert "Blocked reasons:** `router_not_trusted`" in markdown
 
 
 def test_analyze_demo_input_for_ui_keeps_current_task_when_no_recommendation(tmp_path: Path) -> None:
@@ -205,7 +206,88 @@ def test_analyze_demo_input_with_router_speech_noise_recommends_clean_voice(tmp_
     assert "Router status:** `enabled`" in markdown
     assert "Router predicted label:** `speech_noise`" in markdown
     assert "0.920" in markdown
-    assert "target_noise_suppression` is experimental" in markdown
+    assert "Recommended task:** `clean_voice`" in markdown
+
+
+def test_auto_accepted_noisy_speech_recommends_clean_voice_through_planner(tmp_path: Path) -> None:
+    input_path = tmp_path / "speech.wav"
+    input_path.write_bytes(b"audio")
+    router_result = {
+        "router_status": "enabled",
+        "predicted_label": "speech_noisy_general",
+        "confidence": 0.95,
+        "accepted": True,
+        "route_target": CLEAN_VOICE,
+        "recommended_task": CLEAN_VOICE,
+        "decision_reason": "accepted_router_prediction",
+        "warnings": [],
+        "probabilities": {"speech_noisy_general": 0.95},
+        "error": "",
+    }
+
+    with (
+        patch("app.audio_task_demo._extract_feature_row", return_value=_feature_row()),
+        patch("app.audio_task_demo._optional_router_result", return_value=router_result),
+    ):
+        markdown, _table, recommended_task = analyze_demo_input(input_path, AUTO_INTENT)
+
+    assert recommended_task == CLEAN_VOICE
+    assert "Action:** `run_task`" in markdown
+    assert "Algorithm:** `DeepFilterNet`" in markdown
+
+
+def test_auto_accepted_target_noise_requires_manual_selection(tmp_path: Path) -> None:
+    input_path = tmp_path / "speech.wav"
+    input_path.write_bytes(b"audio")
+    router_result = {
+        "router_status": "enabled",
+        "predicted_label": "speech_target_noise",
+        "confidence": 0.96,
+        "accepted": True,
+        "route_target": "manual_required",
+        "recommended_task": None,
+        "decision_reason": "target_noise_suppression is experimental",
+        "warnings": ["target_noise_suppression_is_experimental"],
+        "probabilities": {"speech_target_noise": 0.96},
+        "error": "",
+    }
+
+    with (
+        patch("app.audio_task_demo._extract_feature_row", return_value=_feature_row()),
+        patch("app.audio_task_demo._optional_router_result", return_value=router_result),
+    ):
+        markdown, _table, recommended_task = analyze_demo_input(input_path, AUTO_INTENT)
+
+    assert recommended_task is None
+    assert "Action:** `manual_required`" in markdown
+    assert "target_noise_suppression_manual_only" in markdown
+    assert "Recommended task:** `target_noise_suppression`" not in markdown
+
+
+def test_extract_vocals_target_noise_router_keeps_goal_with_mismatch_warning(tmp_path: Path) -> None:
+    input_path = tmp_path / "speech.wav"
+    input_path.write_bytes(b"audio")
+    router_result = {
+        "router_status": "enabled",
+        "predicted_label": "speech_target_noise",
+        "confidence": 0.96,
+        "accepted": True,
+        "route_target": "manual_required",
+        "recommended_task": None,
+        "decision_reason": "target_noise_suppression is experimental",
+        "warnings": [],
+        "probabilities": {"speech_target_noise": 0.96},
+        "error": "",
+    }
+
+    with (
+        patch("app.audio_task_demo._extract_feature_row", return_value=_feature_row()),
+        patch("app.audio_task_demo._optional_router_result", return_value=router_result),
+    ):
+        markdown, _table, recommended_task = analyze_demo_input(input_path, MUSIC_INTENT)
+
+    assert recommended_task == EXTRACT_VOCALS
+    assert "router_goal_mismatch" in markdown
 
 
 def test_analyze_demo_input_with_router_music_and_manual_music_recommends_extract_vocals(tmp_path: Path) -> None:
@@ -235,7 +317,7 @@ def test_analyze_demo_input_with_router_music_and_manual_music_recommends_extrac
     assert recommended_task == EXTRACT_VOCALS
     assert "Router predicted label:** `music`" in markdown
     assert "music=0.930" in markdown
-    assert "remove_vocals` is also valid" in markdown
+    assert "Recommended task:** `extract_vocals`" in markdown
 
 
 def test_analyze_demo_input_rejects_unaccepted_router_target_noise_prediction(tmp_path: Path) -> None:
@@ -268,7 +350,7 @@ def test_analyze_demo_input_rejects_unaccepted_router_target_noise_prediction(tm
 
     assert recommended_task == CLEAN_VOICE
     assert "Router accepted:** `false`" in markdown
-    assert "Router prediction is not trusted" in markdown
+    assert "Recommended task:** `clean_voice`" in markdown
 
 
 def test_auto_mode_with_router_environment_noise_returns_no_recommendation(tmp_path: Path) -> None:
@@ -290,7 +372,7 @@ def test_auto_mode_with_router_environment_noise_returns_no_recommendation(tmp_p
 
     assert recommended_task is None
     assert "Router predicted label:** `environment_noise`" in markdown
-    assert "Router output is shown as analysis evidence" in markdown
+    assert "Blocked reasons:** `router_not_trusted`" in markdown
 
 
 def test_analyze_demo_input_router_failure_falls_back_safely(tmp_path: Path) -> None:
@@ -431,22 +513,11 @@ def test_demo_router_music_does_not_block_remove_vocals(tmp_path: Path) -> None:
     assert downloadable.endswith("no_vocals.wav")
 
 
-def test_demo_target_noise_suppression_allows_speech_intent(tmp_path: Path) -> None:
+def test_demo_target_noise_suppression_is_blocked_by_planner(tmp_path: Path) -> None:
     input_path = tmp_path / "speech.wav"
     output_root = tmp_path / "demo-runs"
     input_path.write_bytes(b"audio")
-    calls: list[dict[str, object]] = []
-
-    def mock_run_audio_task(**kwargs: object) -> Path:
-        calls.append(kwargs)
-        run_dir = output_root / "target_noise_suppression" / "mock-run"
-        primary_output = run_dir / "speech.target_noise_suppressed.wav"
-        primary_output.parent.mkdir(parents=True, exist_ok=True)
-        primary_output.write_bytes(b"enhanced")
-        _write_summary(run_dir, task=TARGET_NOISE_SUPPRESSION, primary_output_path=primary_output)
-        return run_dir
-
-    with patch("app.audio_task_demo.run_audio_task", side_effect=mock_run_audio_task):
+    with patch("app.audio_task_demo.run_audio_task") as run_mock:
         markdown, table, downloadable = run_demo_task(
             input_path,
             TARGET_NOISE_SUPPRESSION,
@@ -454,17 +525,36 @@ def test_demo_target_noise_suppression_allows_speech_intent(tmp_path: Path) -> N
             output_root=output_root,
         )
 
-    assert calls[0]["task"] == TARGET_NOISE_SUPPRESSION
-    assert "success" in markdown
-    assert ["task", TARGET_NOISE_SUPPRESSION] in table
-    assert downloadable.endswith("speech.target_noise_suppressed.wav")
+    run_mock.assert_not_called()
+    assert "Blocked" in markdown
+    assert "target_noise_suppression_manual_only" in markdown
+    assert table == []
+    assert downloadable is None
 
 
-def test_demo_blocks_speech_intent_with_extract_vocals(tmp_path: Path) -> None:
+def test_demo_speech_intent_extract_vocals_runs_with_planner_warning(tmp_path: Path) -> None:
     input_path = tmp_path / "speech.wav"
     input_path.write_bytes(b"audio")
 
-    with patch("app.audio_task_demo.run_audio_task") as run_mock:
+    def mock_run_audio_task(**kwargs: object) -> Path:
+        run_dir = tmp_path / "runs" / "extract_vocals" / "mock-run"
+        primary_output = run_dir / "vocals.wav"
+        primary_output.parent.mkdir(parents=True, exist_ok=True)
+        primary_output.write_bytes(b"vocals")
+        _write_summary(run_dir, task=EXTRACT_VOCALS, primary_output_path=primary_output)
+        return run_dir
+
+    router_result = {
+        "router_status": "enabled",
+        "predicted_label": "speech_target_noise",
+        "confidence": 0.95,
+        "accepted": True,
+        "warnings": [],
+    }
+    with (
+        patch("app.audio_task_demo.run_audio_task", side_effect=mock_run_audio_task) as run_mock,
+        patch("app.audio_task_demo._optional_router_result", return_value=router_result),
+    ):
         markdown, table, downloadable = run_demo_task(
             input_path,
             EXTRACT_VOCALS,
@@ -472,11 +562,10 @@ def test_demo_blocks_speech_intent_with_extract_vocals(tmp_path: Path) -> None:
             output_root=tmp_path / "runs",
         )
 
-    run_mock.assert_not_called()
-    assert "Blocked" in markdown
-    assert "Speech/noisy speech" in markdown
-    assert table == []
-    assert downloadable is None
+    run_mock.assert_called_once()
+    assert "router_goal_mismatch" in markdown
+    assert ["task", EXTRACT_VOCALS] in table
+    assert downloadable is not None
 
 
 def test_demo_blocks_music_intent_with_target_noise_suppression(tmp_path: Path) -> None:
@@ -493,25 +582,17 @@ def test_demo_blocks_music_intent_with_target_noise_suppression(tmp_path: Path) 
 
     run_mock.assert_not_called()
     assert "Blocked" in markdown
-    assert "not intended for music input" in markdown
+    assert "target_noise_suppression_manual_only" in markdown
     assert table == []
     assert downloadable is None
 
 
-def test_demo_unknown_intent_allows_target_noise_suppression_with_caution(tmp_path: Path) -> None:
+def test_demo_unknown_intent_blocks_target_noise_suppression(tmp_path: Path) -> None:
     input_path = tmp_path / "unknown.wav"
     output_root = tmp_path / "demo-runs"
     input_path.write_bytes(b"audio")
 
-    def mock_run_audio_task(**kwargs: object) -> Path:
-        run_dir = output_root / "target_noise_suppression" / "mock-run"
-        primary_output = run_dir / "unknown.target_noise_suppressed.wav"
-        primary_output.parent.mkdir(parents=True, exist_ok=True)
-        primary_output.write_bytes(b"enhanced")
-        _write_summary(run_dir, task=TARGET_NOISE_SUPPRESSION, primary_output_path=primary_output)
-        return run_dir
-
-    with patch("app.audio_task_demo.run_audio_task", side_effect=mock_run_audio_task):
+    with patch("app.audio_task_demo.run_audio_task") as run_mock:
         markdown, table, downloadable = run_demo_task(
             input_path,
             TARGET_NOISE_SUPPRESSION,
@@ -519,9 +600,10 @@ def test_demo_unknown_intent_allows_target_noise_suppression_with_caution(tmp_pa
             output_root=output_root,
         )
 
-    assert "Caution" in markdown
-    assert ["task", TARGET_NOISE_SUPPRESSION] in table
-    assert downloadable.endswith("unknown.target_noise_suppressed.wav")
+    run_mock.assert_not_called()
+    assert "target_noise_suppression_manual_only" in markdown
+    assert table == []
+    assert downloadable is None
 
 
 def test_demo_auto_intent_allows_run_with_caution(tmp_path: Path) -> None:
@@ -545,16 +627,23 @@ def test_demo_auto_intent_allows_run_with_caution(tmp_path: Path) -> None:
             output_root=output_root,
         )
 
-    assert "Caution" in markdown
     assert ["task", CLEAN_VOICE] in table
     assert downloadable.endswith("auto.denoised.wav")
 
 
-def test_demo_blocks_speech_intent_with_remove_vocals(tmp_path: Path) -> None:
+def test_demo_speech_intent_remove_vocals_still_runs(tmp_path: Path) -> None:
     input_path = tmp_path / "speech.wav"
     input_path.write_bytes(b"audio")
 
-    with patch("app.audio_task_demo.run_audio_task") as run_mock:
+    def mock_run_audio_task(**kwargs: object) -> Path:
+        run_dir = tmp_path / "runs" / "remove_vocals" / "mock-run"
+        primary_output = run_dir / "no_vocals.wav"
+        primary_output.parent.mkdir(parents=True, exist_ok=True)
+        primary_output.write_bytes(b"no-vocals")
+        _write_summary(run_dir, task=REMOVE_VOCALS, primary_output_path=primary_output)
+        return run_dir
+
+    with patch("app.audio_task_demo.run_audio_task", side_effect=mock_run_audio_task) as run_mock:
         markdown, table, downloadable = run_demo_task(
             input_path,
             REMOVE_VOCALS,
@@ -562,11 +651,9 @@ def test_demo_blocks_speech_intent_with_remove_vocals(tmp_path: Path) -> None:
             output_root=tmp_path / "runs",
         )
 
-    run_mock.assert_not_called()
-    assert "Blocked" in markdown
-    assert "Speech/noisy speech" in markdown
-    assert table == []
-    assert downloadable is None
+    run_mock.assert_called_once()
+    assert ["task", REMOVE_VOCALS] in table
+    assert downloadable is not None
 
 
 def test_demo_missing_file_input_returns_clear_error(tmp_path: Path) -> None:

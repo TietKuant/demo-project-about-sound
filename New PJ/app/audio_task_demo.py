@@ -14,6 +14,20 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.extract_audio_features import extract_audio_features
 from scripts.run_audio_task import run_audio_task
+from src.planner.processing_planner import (
+    ACTION_RUN_TASK,
+    ANALYZE_ONLY,
+    AUTO,
+    EXTRACT_VOCALS_GOAL,
+    IMPROVE_SPEECH_CLARITY,
+    REDUCE_TARGET_NOISE,
+    REMOVE_VOCALS_GOAL,
+    ProcessingCapabilities,
+    ProcessingFacts,
+    ProcessingPlan,
+    RouterEvidence,
+    plan_processing,
+)
 from src.router.task_registry import (
     CLEAN_VOICE,
     EXTRACT_VOCALS,
@@ -38,7 +52,6 @@ AUTO_INTENT = "Auto detect / not sure"
 UNKNOWN_INTENT = "Unknown / not sure"
 CONTENT_INTENTS = [AUTO_INTENT, SPEECH_INTENT, MUSIC_INTENT, UNKNOWN_INTENT]
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
-MUSIC_TASKS = {EXTRACT_VOCALS, REMOVE_VOCALS}
 ROUTER_CHECKPOINT_ENV_VAR = "AUDIO_ROUTER_CHECKPOINT"
 ROUTER_CONFIDENCE_THRESHOLD = 0.90
 DEMO_CSS = """
@@ -175,18 +188,85 @@ def _profile_notes(row: dict[str, str]) -> list[str]:
     return notes
 
 
-def _recommend_for_intent(content_intent: str) -> tuple[str | None, str]:
+def _planner_goal_for_intent(content_intent: str) -> str:
     if content_intent == SPEECH_INTENT:
-        return CLEAN_VOICE, (
-            "The declared content intent is speech/noisy speech. `clean_voice` is the default recommendation; "
-            "`target_noise_suppression` is an experimental alternative for target-noise examples."
-        )
+        return IMPROVE_SPEECH_CLARITY
     if content_intent == MUSIC_INTENT:
-        return EXTRACT_VOCALS, (
-            "The declared content intent is music or a music video with vocals. `extract_vocals` is the default; "
-            "`remove_vocals` remains valid for background/accompaniment extraction."
-        )
-    return None, "The content intent is not specified, so the demo does not auto-select a task."
+        return EXTRACT_VOCALS_GOAL
+    if content_intent == AUTO_INTENT:
+        return AUTO
+    return ANALYZE_ONLY
+
+
+def _planner_goal_for_task(task: str) -> str | None:
+    return {
+        CLEAN_VOICE: IMPROVE_SPEECH_CLARITY,
+        EXTRACT_VOCALS: EXTRACT_VOCALS_GOAL,
+        REMOVE_VOCALS: REMOVE_VOCALS_GOAL,
+        TARGET_NOISE_SUPPRESSION: REDUCE_TARGET_NOISE,
+    }.get(task)
+
+
+def _processing_facts(input_path: Path, feature_row: dict[str, str]) -> ProcessingFacts:
+    return ProcessingFacts(
+        input_type=_input_type_for_path(input_path),
+        duration_sec=_parse_float(feature_row.get("duration_sec")),
+        rms_energy=_parse_float(feature_row.get("rms_energy")),
+        is_valid_media=True,
+    )
+
+
+def _router_evidence(router_result: dict[str, object]) -> RouterEvidence:
+    predicted_label = str(router_result.get("predicted_label") or "")
+    normalized_label = {
+        "music": "music_with_vocals",
+        "environment_noise": "environment_only",
+    }.get(predicted_label, predicted_label)
+    warnings = router_result.get("warnings")
+    return RouterEvidence(
+        router_status=str(router_result.get("router_status") or "disabled"),
+        predicted_label=normalized_label or None,
+        confidence=(
+            float(router_result["confidence"])
+            if isinstance(router_result.get("confidence"), (int, float))
+            else None
+        ),
+        accepted=router_result.get("accepted") is True,
+        route_target=str(router_result.get("route_target") or "") or None,
+        recommended_task=str(router_result.get("recommended_task") or "") or None,
+        decision_reason=str(router_result.get("decision_reason") or "") or None,
+        warnings=[str(warning) for warning in warnings] if isinstance(warnings, list) else [],
+    )
+
+
+def _demo_capabilities() -> ProcessingCapabilities:
+    return ProcessingCapabilities(
+        clean_voice_available=True,
+        extract_vocals_available=True,
+        remove_vocals_available=True,
+        target_noise_suppression_available=False,
+    )
+
+
+def _display_values(values: list[str]) -> str:
+    return ", ".join(f"`{value}`" for value in values) if values else "none"
+
+
+def _processing_plan_markdown(plan: ProcessingPlan) -> list[str]:
+    recommended_task = f"`{plan.recommended_task}`" if plan.recommended_task else "none"
+    algorithm = f"`{plan.algorithm}`" if plan.algorithm else "none"
+    return [
+        "",
+        "### Processing plan",
+        f"- **Mode:** `{plan.mode}`",
+        f"- **Action:** `{plan.action}`",
+        f"- **Recommended task:** {recommended_task}",
+        f"- **Algorithm:** {algorithm}",
+        f"- **Warnings:** {_display_values(plan.warnings)}",
+        f"- **Blocked reasons:** {_display_values(plan.blocked_reasons)}",
+        f"- **Alternatives:** {_display_values(plan.alternatives)}",
+        f"- **Explanation:** {plan.explanation}",
+    ]
 
 
 def _optional_router_result(input_path: Path) -> dict[str, object]:
@@ -271,63 +351,6 @@ def _probability_summary(probabilities: object) -> str:
     return ", ".join(parts)
 
 
-def _recommend_with_router(content_intent: str, router_result: dict[str, object]) -> tuple[str | None, str]:
-    if content_intent in {AUTO_INTENT, UNKNOWN_INTENT}:
-        return None, (
-            "Router output is shown as analysis evidence. Select an intent or task before running if needed."
-        )
-
-    router_status = router_result.get("router_status")
-    if router_status != "enabled":
-        return _recommend_for_intent(content_intent)
-
-    if router_result.get("accepted") is not True:
-        fallback_task, fallback_reason = _recommend_for_intent(content_intent)
-        decision_reason = str(router_result.get("decision_reason") or "router_prediction_not_accepted")
-        threshold = router_result.get("confidence_threshold")
-        threshold_text = f" at threshold `{float(threshold):.2f}`" if isinstance(threshold, (int, float)) else ""
-        return fallback_task, (
-            f"Router prediction is not trusted (`{decision_reason}`{threshold_text}), "
-            f"so the demo falls back to content intent. {fallback_reason}"
-        )
-
-    predicted_label = str(router_result.get("predicted_label", ""))
-    router_task = router_result.get("recommended_task")
-
-    if predicted_label in {"music", "music_with_vocals"}:
-        if content_intent == MUSIC_INTENT:
-            return EXTRACT_VOCALS, (
-                "Manual music intent is selected. Router also predicts music, so `extract_vocals` is suggested by "
-                "default; `remove_vocals` is also valid for background/accompaniment extraction."
-            )
-        return _recommend_for_intent(content_intent)
-
-    if predicted_label in {"speech_noise", "speech_noisy_general"}:
-        if content_intent == SPEECH_INTENT:
-            return CLEAN_VOICE, (
-                "Manual speech/noisy speech intent is selected. Router also predicts noisy speech, so `clean_voice` "
-                "is suggested by default; `target_noise_suppression` is experimental for target-noise examples."
-            )
-        return _recommend_for_intent(content_intent)
-
-    if predicted_label == "speech_target_noise":
-        if content_intent == SPEECH_INTENT and router_task == TARGET_NOISE_SUPPRESSION:
-            return TARGET_NOISE_SUPPRESSION, (
-                "Manual speech/noisy speech intent is selected and the accepted router evidence points to the "
-                "experimental target-noise suppressor. Use this only for supported target-noise examples."
-            )
-        return _recommend_for_intent(content_intent)
-
-    if predicted_label in {"environment_noise", "environment_only"}:
-        task, intent_reason = _recommend_for_intent(content_intent)
-        return task, (
-            "Router predicts environment noise, so treat the recommendation cautiously. "
-            f"{intent_reason}"
-        )
-
-    return _recommend_for_intent(content_intent)
-
-
 def analyze_demo_input(
     file_path: str | Path | None,
     content_intent: str = UNKNOWN_INTENT,
@@ -346,11 +369,16 @@ def analyze_demo_input(
         return f"### Error\nAudio feature extraction failed: `{exc}`", [], None
 
     router_result = _optional_router_result(source)
-    recommended_task, reason = _recommend_with_router(content_intent, router_result)
+    plan = plan_processing(
+        _planner_goal_for_intent(content_intent),
+        _processing_facts(source, row),
+        _router_evidence(router_result),
+        _demo_capabilities(),
+    )
+    recommended_task = plan.recommended_task
     profile_notes = _profile_notes(row)
     status = row.get("status", "")
     error = row.get("error", "")
-    recommendation_text = f"`{recommended_task}`" if recommended_task else "No automatic recommendation"
     router_confidence = router_result.get("confidence")
     confidence_text = f"{float(router_confidence):.3f}" if isinstance(router_confidence, (int, float)) else "n/a"
     router_warnings = router_result.get("warnings")
@@ -373,10 +401,8 @@ def analyze_demo_input(
         f"- **Router probabilities:** `{_probability_summary(router_result.get('probabilities'))}`",
         f"- **Content intent:** `{content_intent}`",
         f"- **Profile notes:** {' '.join(profile_notes)}",
-        f"- **Recommended task:** {recommendation_text}",
-        f"- **Reason:** {reason}",
-        "- **Note:** Auto mode does not change the task automatically.",
     ]
+    lines.extend(_processing_plan_markdown(plan))
     router_error = str(router_result.get("error", ""))
     if router_error:
         lines.append(f"- **Router note:** `{router_error}`")
@@ -399,28 +425,6 @@ def analyze_demo_input_for_ui(
     return markdown, table, "No automatic recommendation", fallback_task
 
 
-def _intent_run_warning(content_intent: str, task: str) -> tuple[bool, str]:
-    if content_intent == SPEECH_INTENT and task in MUSIC_TASKS:
-        return True, (
-            "### Blocked\n"
-            "Speech/noisy speech intent is not compatible with vocal separation in the MVP demo. "
-            "Choose `clean_voice` or change the content intent."
-        )
-    if content_intent == MUSIC_INTENT and task == CLEAN_VOICE:
-        return False, (
-            "### Caution\n"
-            "Content intent is music/video with vocals. `clean_voice` can run, but it is intended for speech cleanup."
-        )
-    if content_intent == MUSIC_INTENT and task == TARGET_NOISE_SUPPRESSION:
-        return True, (
-            "### Blocked\n"
-            "`target_noise_suppression` is an experimental speech/noise baseline and is not intended for music input."
-        )
-    if content_intent in {AUTO_INTENT, UNKNOWN_INTENT}:
-        return False, "### Caution\nContent intent is not specified. The selected task will run without automatic validation."
-    return False, ""
-
-
 def run_demo_task(
     file_path: str | Path | None,
     task: str,
@@ -435,9 +439,25 @@ def run_demo_task(
     if not source.exists():
         return f"### Error\nInput file not found: `{source}`", [], None
 
-    should_block, warning = _intent_run_warning(content_intent, task)
-    if should_block:
-        return warning, [], None
+    goal = _planner_goal_for_task(task)
+    if goal is None:
+        return f"### Blocked\nUnsupported task: `{task}`", [], None
+
+    try:
+        feature_row = _extract_feature_row(source)
+        facts = _processing_facts(source, feature_row)
+    except Exception:
+        facts = ProcessingFacts(input_type=_input_type_for_path(source))
+    router_result = _optional_router_result(source)
+    plan = plan_processing(
+        goal,
+        facts,
+        _router_evidence(router_result),
+        _demo_capabilities(),
+    )
+    if plan.action != ACTION_RUN_TASK or plan.blocked_reasons:
+        lines = ["### Blocked", *_processing_plan_markdown(plan)]
+        return "\n".join(lines), [], None
 
     try:
         run_dir = run_audio_task(task=task, input_path=source, output_root=output_root)
@@ -445,8 +465,12 @@ def run_demo_task(
         primary_output_path = summary.get("primary_output_path", "")
         downloadable_output = primary_output_path if primary_output_path and Path(primary_output_path).exists() else None
         markdown = _summary_markdown(summary, run_dir)
-        if warning:
-            markdown = f"{warning}\n\n{markdown}"
+        if plan.warnings:
+            markdown = (
+                "### Processing warnings\n"
+                f"{_display_values(plan.warnings)}\n\n"
+                f"{markdown}"
+            )
         return markdown, _summary_table(summary), downloadable_output
     except Exception as exc:
         return f"### Error\n{exc}", [], None
