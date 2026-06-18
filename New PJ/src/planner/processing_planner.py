@@ -1,168 +1,369 @@
-"""Small rule-based processing planner for multi-step audio/video workflows."""
+"""Deterministic decision-table planner for goal-driven and auto processing."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, REMOVE_VOCALS, TARGET_NOISE_SUPPRESSION
+from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, REMOVE_VOCALS
 
 
+ANALYZE_ONLY = "analyze_only"
+AUTO = "auto"
 IMPROVE_SPEECH_CLARITY = "improve_speech_clarity"
 EXTRACT_VOCALS_GOAL = "extract_vocals"
 REMOVE_VOCALS_GOAL = "remove_vocals"
 REDUCE_TARGET_NOISE = "reduce_target_noise"
-EXTRACT_THEN_CLEAN_VOCALS = "extract_then_clean_vocals"
-ANALYZE_ONLY = "analyze_only"
 
-SUPPORTED_GOALS = {
-    IMPROVE_SPEECH_CLARITY,
-    EXTRACT_VOCALS_GOAL,
-    REMOVE_VOCALS_GOAL,
-    REDUCE_TARGET_NOISE,
-    EXTRACT_THEN_CLEAN_VOCALS,
-    ANALYZE_ONLY,
-}
+MODE_GOAL_DRIVEN = "goal_driven"
+MODE_AUTO_RECOMMENDATION = "auto_recommendation"
+MODE_ANALYZE_ONLY = "analyze_only"
 
-MUSIC_LIKE_LABEL = "music"
-SPEECH_NOISE_LABEL = "speech_noise"
+ACTION_RUN_TASK = "run_task"
+ACTION_MANUAL_REQUIRED = "manual_required"
+ACTION_ANALYZE_ONLY = "analyze_only"
+ACTION_NO_PROCESS = "no_process"
 
-WARNING_MUSIC_LIKE_SPEECH_CLEANUP = "music_like_input_may_be_distorted_by_speech_cleanup"
-WARNING_VOCAL_SEPARATION_FOR_MUSIC = "vocal_separation_is_intended_for_music_mixtures"
-BLOCK_CLEAN_VOICE_UNAVAILABLE = "clean_voice_unavailable"
-BLOCK_DEMUCS_UNAVAILABLE = "demucs_unavailable"
-BLOCK_TARGET_NOISE_AUDIO_ONLY = "target_noise_suppression_audio_only"
-BLOCK_TARGET_NOISE_CHECKPOINT_MISSING = "target_noise_checkpoint_missing"
+WARNING_ROUTER_GOAL_MISMATCH = "router_goal_mismatch"
+WARNING_SILENCE_OR_NEAR_SILENCE = "silence_or_near_silence"
+WARNING_MANUAL_MUSIC_TASK_SELECTION_REQUIRED = "manual_music_task_selection_required"
 
+BLOCK_INVALID_MEDIA = "invalid_media"
+BLOCK_INVALID_DURATION = "invalid_duration"
+BLOCK_ENGINE_UNAVAILABLE = "engine_unavailable"
+BLOCK_ROUTER_NOT_TRUSTED = "router_not_trusted"
+BLOCK_TARGET_NOISE_SUPPRESSION_MANUAL_ONLY = "target_noise_suppression_manual_only"
+BLOCK_UNKNOWN_ROUTER_LABEL = "unknown_router_label"
+BLOCK_UNSUPPORTED_GOAL = "unsupported_goal"
 
-@dataclass(slots=True)
-class PlannerEvidence:
-    """Advisory analysis evidence for planning; never blocks by itself."""
-
-    router_label: str | None = None
-    router_confidence: float | None = None
-    music_like: bool = False
-    speech_noise_like: bool = False
+SILENCE_RMS_THRESHOLD = 1e-5
 
 
 @dataclass(slots=True)
-class PlannerCapabilities:
-    """Available runtime capabilities for the planner.
+class ProcessingFacts:
+    """Factual media evidence used for hard planning guards."""
 
-    Defaults are intentionally conservative. Callers should pass detected runtime
-    capabilities from the app or CLI instead of relying on implicit availability.
-    """
+    input_type: str
+    duration_sec: float | None = None
+    rms_energy: float | None = None
+    is_valid_media: bool = True
 
-    clean_voice_available: bool = False
-    demucs_available: bool = False
-    target_noise_checkpoint_available: bool = False
+
+@dataclass(slots=True)
+class RouterEvidence:
+    """Optional advisory or recommendation evidence from the classifier router."""
+
+    router_status: str = "disabled"
+    predicted_label: str | None = None
+    confidence: float | None = None
+    accepted: bool = False
+    route_target: str | None = None
+    recommended_task: str | None = None
+    decision_reason: str | None = None
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ProcessingCapabilities:
+    """Runtime engine availability."""
+
+    clean_voice_available: bool = True
+    extract_vocals_available: bool = True
+    remove_vocals_available: bool = True
+    target_noise_suppression_available: bool = False
+
+
+# Short contract names matching the planner inputs described by callers.
+Facts = ProcessingFacts
+Capabilities = ProcessingCapabilities
 
 
 @dataclass(slots=True)
 class ProcessingPlan:
-    """Planner output for the selected user goal."""
+    """One deterministic processing decision."""
 
-    recommended_steps: list[str] = field(default_factory=list)
-    alternatives: list[list[str]] = field(default_factory=list)
+    mode: str
+    goal: str
+    action: str
+    recommended_task: str | None = None
+    engine_family: str | None = None
+    algorithm: str | None = None
+    expected_outputs: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     blocked_reasons: list[str] = field(default_factory=list)
-    expected_outputs: list[str] = field(default_factory=list)
+    alternatives: list[str] = field(default_factory=list)
+    explanation: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class _TaskPolicy:
+    task: str
+    capability: str
+    engine_family: str
+    algorithm: str
+    expected_outputs: tuple[str, ...]
+
+
+_GOAL_TASK_POLICIES = {
+    IMPROVE_SPEECH_CLARITY: _TaskPolicy(
+        task=CLEAN_VOICE,
+        capability="clean_voice_available",
+        engine_family="speech_enhancement",
+        algorithm="DeepFilterNet",
+        expected_outputs=("restored",),
+    ),
+    EXTRACT_VOCALS_GOAL: _TaskPolicy(
+        task=EXTRACT_VOCALS,
+        capability="extract_vocals_available",
+        engine_family="source_separation",
+        algorithm="Demucs",
+        expected_outputs=("vocals", "no_vocals"),
+    ),
+    REMOVE_VOCALS_GOAL: _TaskPolicy(
+        task=REMOVE_VOCALS,
+        capability="remove_vocals_available",
+        engine_family="source_separation",
+        algorithm="Demucs",
+        expected_outputs=("no_vocals", "vocals"),
+    ),
+}
+
+_GOAL_CONFLICT_LABELS = {
+    IMPROVE_SPEECH_CLARITY: {"environment_only", "music_with_vocals"},
+    EXTRACT_VOCALS_GOAL: {
+        "environment_only",
+        "speech_clean",
+        "speech_target_noise",
+        "speech_noise",
+        "speech_noisy_general",
+    },
+    REMOVE_VOCALS_GOAL: {
+        "environment_only",
+        "speech_clean",
+        "speech_target_noise",
+        "speech_noise",
+        "speech_noisy_general",
+    },
+}
 
 
 def plan_processing(
-    *,
     goal: str,
-    input_type: str,
-    evidence: PlannerEvidence | None = None,
-    capabilities: PlannerCapabilities | None = None,
+    facts: ProcessingFacts,
+    router_evidence: RouterEvidence | None = None,
+    capabilities: ProcessingCapabilities | None = None,
 ) -> ProcessingPlan:
-    """Return a conservative plan for one user-facing processing goal."""
-    evidence = evidence or PlannerEvidence()
-    capabilities = capabilities or PlannerCapabilities()
-    plan = ProcessingPlan()
+    """Plan processing from user intent, hard facts, router evidence, and capabilities."""
+    router = router_evidence or RouterEvidence()
+    available = capabilities or ProcessingCapabilities()
+    mode = _mode_for_goal(goal)
 
-    if goal not in SUPPORTED_GOALS:
-        plan.blocked_reasons.append(f"unsupported_goal:{goal}")
-        return plan
-    if input_type not in {"audio", "video"}:
-        plan.blocked_reasons.append(f"unsupported_input_type:{input_type}")
-        return plan
+    hard_guard = _hard_fact_guard(goal, facts, mode)
+    if hard_guard is not None:
+        return hard_guard
+
+    if facts.rms_energy is not None and facts.rms_energy < SILENCE_RMS_THRESHOLD:
+        return ProcessingPlan(
+            mode=MODE_ANALYZE_ONLY,
+            goal=goal,
+            action=ACTION_ANALYZE_ONLY,
+            warnings=[WARNING_SILENCE_OR_NEAR_SILENCE],
+            expected_outputs=["analysis_evidence"],
+            explanation="Near-silent input is retained for analysis instead of automatic processing.",
+        )
+
     if goal == ANALYZE_ONLY:
-        plan.expected_outputs.append("analysis_evidence")
-        return plan
-
-    _add_evidence_warnings(goal, evidence, plan)
-
-    if goal == IMPROVE_SPEECH_CLARITY:
-        _plan_clean_voice(plan, capabilities)
-    elif goal == EXTRACT_VOCALS_GOAL:
-        _plan_demucs_step(plan, capabilities, EXTRACT_VOCALS)
-    elif goal == REMOVE_VOCALS_GOAL:
-        _plan_demucs_step(plan, capabilities, REMOVE_VOCALS)
-    elif goal == REDUCE_TARGET_NOISE:
-        _plan_target_noise(plan, input_type, capabilities)
-    elif goal == EXTRACT_THEN_CLEAN_VOCALS:
-        _plan_extract_then_clean(plan, capabilities)
-
-    return plan
-
-
-def _add_evidence_warnings(goal: str, evidence: PlannerEvidence, plan: ProcessingPlan) -> None:
-    music_like = evidence.music_like or evidence.router_label == MUSIC_LIKE_LABEL
-    speech_noise_like = evidence.speech_noise_like or evidence.router_label == SPEECH_NOISE_LABEL
-
-    if goal == IMPROVE_SPEECH_CLARITY and music_like:
-        plan.warnings.append(WARNING_MUSIC_LIKE_SPEECH_CLEANUP)
-    if goal in {EXTRACT_VOCALS_GOAL, REMOVE_VOCALS_GOAL, EXTRACT_THEN_CLEAN_VOCALS} and speech_noise_like:
-        plan.warnings.append(WARNING_VOCAL_SEPARATION_FOR_MUSIC)
-
-
-def _plan_clean_voice(plan: ProcessingPlan, capabilities: PlannerCapabilities) -> None:
-    if not capabilities.clean_voice_available:
-        plan.blocked_reasons.append(BLOCK_CLEAN_VOICE_UNAVAILABLE)
-        return
-    plan.recommended_steps.append(CLEAN_VOICE)
-    plan.expected_outputs.append("restored_audio_or_video")
+        return ProcessingPlan(
+            mode=MODE_ANALYZE_ONLY,
+            goal=goal,
+            action=ACTION_ANALYZE_ONLY,
+            expected_outputs=["analysis_evidence"],
+            explanation="The selected goal requests analysis without processing.",
+        )
+    if goal == AUTO:
+        return _plan_auto(goal, router, available)
+    if goal == REDUCE_TARGET_NOISE:
+        return ProcessingPlan(
+            mode=MODE_GOAL_DRIVEN,
+            goal=goal,
+            action=ACTION_MANUAL_REQUIRED,
+            warnings=_router_warnings(router),
+            blocked_reasons=[BLOCK_TARGET_NOISE_SUPPRESSION_MANUAL_ONLY],
+            alternatives=[CLEAN_VOICE] if available.clean_voice_available else [],
+            explanation="Target-noise suppression is experimental and requires manual selection.",
+        )
+    if goal in _GOAL_TASK_POLICIES:
+        return _plan_goal_task(goal, router, available)
+    return ProcessingPlan(
+        mode=MODE_GOAL_DRIVEN,
+        goal=goal,
+        action=ACTION_MANUAL_REQUIRED,
+        blocked_reasons=[BLOCK_UNSUPPORTED_GOAL],
+        explanation="The requested processing goal is unsupported.",
+    )
 
 
-def _plan_demucs_step(plan: ProcessingPlan, capabilities: PlannerCapabilities, task: str) -> None:
-    if not capabilities.demucs_available:
-        plan.blocked_reasons.append(BLOCK_DEMUCS_UNAVAILABLE)
-        return
-    plan.recommended_steps.append(task)
-    if task == EXTRACT_VOCALS:
-        plan.expected_outputs.extend(["vocals", "no_vocals"])
-    else:
-        plan.expected_outputs.extend(["no_vocals", "vocals"])
+def _mode_for_goal(goal: str) -> str:
+    if goal == AUTO:
+        return MODE_AUTO_RECOMMENDATION
+    if goal == ANALYZE_ONLY:
+        return MODE_ANALYZE_ONLY
+    return MODE_GOAL_DRIVEN
 
 
-def _plan_target_noise(plan: ProcessingPlan, input_type: str, capabilities: PlannerCapabilities) -> None:
-    if input_type == "video":
-        plan.blocked_reasons.append(BLOCK_TARGET_NOISE_AUDIO_ONLY)
-        _add_clean_voice_alternative(plan, capabilities)
-        return
-    if not capabilities.target_noise_checkpoint_available:
-        plan.blocked_reasons.append(BLOCK_TARGET_NOISE_CHECKPOINT_MISSING)
-        _add_clean_voice_alternative(plan, capabilities)
-        return
-    plan.recommended_steps.append(TARGET_NOISE_SUPPRESSION)
-    plan.expected_outputs.append("enhanced_audio")
+def _hard_fact_guard(goal: str, facts: ProcessingFacts, mode: str) -> ProcessingPlan | None:
+    if not facts.is_valid_media:
+        return ProcessingPlan(
+            mode=mode,
+            goal=goal,
+            action=ACTION_MANUAL_REQUIRED,
+            blocked_reasons=[BLOCK_INVALID_MEDIA],
+            explanation="The input failed media validation.",
+        )
+    if facts.duration_sec is not None and facts.duration_sec <= 0:
+        return ProcessingPlan(
+            mode=mode,
+            goal=goal,
+            action=ACTION_MANUAL_REQUIRED,
+            blocked_reasons=[BLOCK_INVALID_DURATION],
+            explanation="The input duration must be greater than zero.",
+        )
+    return None
 
 
-def _plan_extract_then_clean(plan: ProcessingPlan, capabilities: PlannerCapabilities) -> None:
-    if not capabilities.demucs_available:
-        plan.blocked_reasons.append(BLOCK_DEMUCS_UNAVAILABLE)
-    if not capabilities.clean_voice_available:
-        plan.blocked_reasons.append(BLOCK_CLEAN_VOICE_UNAVAILABLE)
-    if plan.blocked_reasons:
-        if capabilities.demucs_available:
-            plan.alternatives.append([EXTRACT_VOCALS])
-        if capabilities.clean_voice_available:
-            plan.alternatives.append([CLEAN_VOICE])
-        return
-    plan.recommended_steps.extend([EXTRACT_VOCALS, CLEAN_VOICE])
-    plan.expected_outputs.extend(["vocals", "cleaned_vocals"])
+def _plan_goal_task(
+    goal: str,
+    router: RouterEvidence,
+    capabilities: ProcessingCapabilities,
+) -> ProcessingPlan:
+    policy = _GOAL_TASK_POLICIES[goal]
+    warnings = _router_warnings(router)
+    if (
+        router.router_status == "enabled"
+        and router.accepted
+        and router.predicted_label in _GOAL_CONFLICT_LABELS[goal]
+    ):
+        _append_unique(warnings, WARNING_ROUTER_GOAL_MISMATCH)
+
+    if not getattr(capabilities, policy.capability):
+        return ProcessingPlan(
+            mode=MODE_GOAL_DRIVEN,
+            goal=goal,
+            action=ACTION_MANUAL_REQUIRED,
+            warnings=warnings,
+            blocked_reasons=[BLOCK_ENGINE_UNAVAILABLE],
+            explanation=f"The required {policy.task} engine is unavailable.",
+        )
+    return ProcessingPlan(
+        mode=MODE_GOAL_DRIVEN,
+        goal=goal,
+        action=ACTION_RUN_TASK,
+        recommended_task=policy.task,
+        engine_family=policy.engine_family,
+        algorithm=policy.algorithm,
+        expected_outputs=list(policy.expected_outputs),
+        warnings=warnings,
+        explanation=f"The user-selected goal maps to the available {policy.algorithm} processing path.",
+    )
 
 
-def _add_clean_voice_alternative(plan: ProcessingPlan, capabilities: PlannerCapabilities) -> None:
-    if capabilities.clean_voice_available:
-        plan.alternatives.append([CLEAN_VOICE])
+def _plan_auto(
+    goal: str,
+    router: RouterEvidence,
+    capabilities: ProcessingCapabilities,
+) -> ProcessingPlan:
+    warnings = _router_warnings(router)
+    if router.router_status != "enabled" or not router.accepted:
+        return ProcessingPlan(
+            mode=MODE_AUTO_RECOMMENDATION,
+            goal=goal,
+            action=ACTION_MANUAL_REQUIRED,
+            warnings=warnings,
+            blocked_reasons=[BLOCK_ROUTER_NOT_TRUSTED],
+            explanation="Auto mode requires accepted evidence from an enabled router.",
+        )
+
+    label = router.predicted_label
+    if label == "speech_clean":
+        return ProcessingPlan(
+            mode=MODE_AUTO_RECOMMENDATION,
+            goal=goal,
+            action=ACTION_NO_PROCESS,
+            warnings=warnings,
+            explanation="The accepted router evidence indicates clean speech.",
+        )
+    if label == "environment_only":
+        return ProcessingPlan(
+            mode=MODE_AUTO_RECOMMENDATION,
+            goal=goal,
+            action=ACTION_NO_PROCESS,
+            warnings=warnings,
+            explanation="Environment-only input is outside automatic processing scope.",
+        )
+    if label == "speech_target_noise":
+        return ProcessingPlan(
+            mode=MODE_AUTO_RECOMMENDATION,
+            goal=goal,
+            action=ACTION_MANUAL_REQUIRED,
+            warnings=warnings,
+            blocked_reasons=[BLOCK_TARGET_NOISE_SUPPRESSION_MANUAL_ONLY],
+            alternatives=[CLEAN_VOICE] if capabilities.clean_voice_available else [],
+            explanation="Target-noise suppression is experimental and requires manual selection.",
+        )
+    if label in {"speech_noise", "speech_noisy_general"}:
+        if not capabilities.clean_voice_available:
+            return ProcessingPlan(
+                mode=MODE_AUTO_RECOMMENDATION,
+                goal=goal,
+                action=ACTION_MANUAL_REQUIRED,
+                warnings=warnings,
+                blocked_reasons=[BLOCK_ENGINE_UNAVAILABLE],
+                explanation="The recommended clean_voice engine is unavailable.",
+            )
+        return ProcessingPlan(
+            mode=MODE_AUTO_RECOMMENDATION,
+            goal=goal,
+            action=ACTION_RUN_TASK,
+            recommended_task=CLEAN_VOICE,
+            engine_family="speech_enhancement",
+            algorithm="DeepFilterNet",
+            expected_outputs=["restored"],
+            warnings=warnings,
+            explanation="The accepted router evidence indicates noisy speech suitable for clean_voice.",
+        )
+    if label == "music_with_vocals":
+        _append_unique(warnings, WARNING_MANUAL_MUSIC_TASK_SELECTION_REQUIRED)
+        return ProcessingPlan(
+            mode=MODE_AUTO_RECOMMENDATION,
+            goal=goal,
+            action=ACTION_MANUAL_REQUIRED,
+            warnings=warnings,
+            alternatives=[
+                task
+                for task, is_available in (
+                    (EXTRACT_VOCALS, capabilities.extract_vocals_available),
+                    (REMOVE_VOCALS, capabilities.remove_vocals_available),
+                )
+                if is_available
+            ],
+            explanation="Music processing requires manual selection between vocal extraction and removal.",
+        )
+    return ProcessingPlan(
+        mode=MODE_AUTO_RECOMMENDATION,
+        goal=goal,
+        action=ACTION_MANUAL_REQUIRED,
+        warnings=warnings,
+        blocked_reasons=[BLOCK_UNKNOWN_ROUTER_LABEL],
+        explanation="The accepted router label has no automatic processing policy.",
+    )
+
+
+def _router_warnings(router: RouterEvidence) -> list[str]:
+    warnings: list[str] = []
+    for warning in router.warnings:
+        _append_unique(warnings, warning)
+    return warnings
+
+
+def _append_unique(values: list[str], value: str) -> None:
+    if value not in values:
+        values.append(value)
