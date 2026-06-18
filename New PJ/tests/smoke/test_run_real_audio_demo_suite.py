@@ -128,6 +128,44 @@ def test_real_audio_demo_suite_runs_manual_task_and_writes_reports(tmp_path: Pat
     assert "clean_voice.wav" in markdown
 
 
+def test_real_audio_demo_suite_runs_manual_target_noise_with_checkpoint(tmp_path: Path) -> None:
+    input_path = tmp_path / "speech-with-siren.wav"
+    checkpoint = tmp_path / "target-noise.pt"
+    input_path.write_bytes(b"audio")
+    checkpoint.write_bytes(b"checkpoint")
+    manifest = tmp_path / "manifest.csv"
+    _write_manifest(
+        manifest,
+        [
+            {
+                "input_path": str(input_path),
+                "case_id": "manual-target-noise",
+                "expected_task": TARGET_NOISE_SUPPRESSION,
+                "description": "Experimental manual candidate",
+                "notes": "",
+            }
+        ],
+    )
+
+    with (
+        patch("scripts.run_real_audio_demo_suite._input_metadata", return_value={}),
+        patch("scripts.run_real_audio_demo_suite.run_audio_task", side_effect=_fake_task_run) as task_mock,
+    ):
+        result = run_real_audio_demo_suite(
+            manifest_path=manifest,
+            output_root=tmp_path / "outputs",
+            target_noise_checkpoint=checkpoint,
+        )
+
+    task_mock.assert_called_once()
+    assert task_mock.call_args.kwargs["task"] == TARGET_NOISE_SUPPRESSION
+    assert task_mock.call_args.kwargs["target_noise_checkpoint"] == checkpoint
+    row = _read_rows(result / "report.csv")[0]
+    assert row["status"] == "success"
+    assert row["selected_task"] == TARGET_NOISE_SUPPRESSION
+    assert row["auto_expectation_result"] == "not_applicable"
+
+
 def test_real_audio_demo_suite_records_missing_input_and_continues(tmp_path: Path) -> None:
     existing_input = tmp_path / "existing.wav"
     existing_input.write_bytes(b"audio")

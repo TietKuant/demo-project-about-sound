@@ -47,10 +47,14 @@ ROUTER_DECISIONS = {
         "warnings": [],
     },
     "speech_target_noise": {
-        "route_target": "target_noise_suppression",
-        "engine_target": "target_noise_suppressor",
-        "recommended_task": "target_noise_suppression",
+        "route_target": "manual_required",
+        "engine_target": "none",
+        "recommended_task": None,
         "warnings": ["target_noise_suppression_is_experimental"],
+        "decision_reason": (
+            "target_noise_suppression is experimental; use manual selection "
+            "or fallback clean_voice after review."
+        ),
     },
 }
 
@@ -81,13 +85,9 @@ def build_router_decision(
         }
 
     decision = dict(ROUTER_DECISIONS[predicted_label])
-    decision.update(
-        {
-            "accepted": True,
-            "decision_reason": "accepted_router_prediction",
-            "warnings": list(decision["warnings"]),
-        }
-    )
+    decision["accepted"] = True
+    decision.setdefault("decision_reason", "accepted_router_prediction")
+    decision["warnings"] = list(decision["warnings"])
     return decision
 
 

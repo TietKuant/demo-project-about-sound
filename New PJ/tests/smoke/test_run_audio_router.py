@@ -130,14 +130,15 @@ def test_build_router_decision_low_confidence_abstains() -> None:
     assert decision["warnings"] == ["low_confidence_router_prediction"]
 
 
-def test_build_router_decision_target_noise_maps_to_experimental_task() -> None:
+def test_build_router_decision_target_noise_requires_manual_selection() -> None:
     decision = build_router_decision("speech_target_noise", 0.95)
 
     assert decision["accepted"] is True
-    assert decision["route_target"] == "target_noise_suppression"
-    assert decision["engine_target"] == "target_noise_suppressor"
-    assert decision["recommended_task"] == "target_noise_suppression"
-    assert decision["decision_reason"] == "accepted_router_prediction"
+    assert decision["route_target"] == "manual_required"
+    assert decision["engine_target"] == "none"
+    assert decision["recommended_task"] is None
+    assert "target_noise_suppression is experimental" in str(decision["decision_reason"])
+    assert "manual selection" in str(decision["decision_reason"])
     assert decision["warnings"] == ["target_noise_suppression_is_experimental"]
 
 
