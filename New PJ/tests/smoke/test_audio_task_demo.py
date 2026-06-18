@@ -13,6 +13,7 @@ from app.audio_task_demo import (
     MUSIC_INTENT,
     ROUTER_CHECKPOINT_ENV_VAR,
     SPEECH_INTENT,
+    TARGET_NOISE_INTENT,
     UNKNOWN_INTENT,
     analyze_demo_input,
     analyze_demo_input_for_ui,
@@ -123,6 +124,35 @@ def test_analyze_demo_input_unknown_intent_returns_no_recommendation(tmp_path: P
     assert ["zero_crossing_rate", "0.0200000000"] in table
     assert "Recommended task:** none" in markdown
     assert "Action:** `analyze_only`" in markdown
+
+
+def test_target_noise_intent_analysis_shows_manual_only_policy(tmp_path: Path) -> None:
+    input_path = tmp_path / "speech-plus-siren.wav"
+    input_path.write_bytes(b"audio")
+
+    with patch("app.audio_task_demo._extract_feature_row", return_value=_feature_row()):
+        markdown, _table, recommended_task = analyze_demo_input(input_path, TARGET_NOISE_INTENT)
+
+    assert recommended_task is None
+    assert "Action:** `manual_required`" in markdown
+    assert "target_noise_suppression_manual_only" in markdown
+    assert "Alternatives:** `clean_voice`" in markdown
+
+
+def test_target_noise_intent_analysis_keeps_current_task_dropdown(tmp_path: Path) -> None:
+    input_path = tmp_path / "speech-plus-siren.wav"
+    input_path.write_bytes(b"audio")
+
+    with patch("app.audio_task_demo._extract_feature_row", return_value=_feature_row()):
+        markdown, _table, recommended_text, dropdown_value = analyze_demo_input_for_ui(
+            input_path,
+            TARGET_NOISE_INTENT,
+            current_task=REMOVE_VOCALS,
+        )
+
+    assert recommended_text == "No automatic recommendation"
+    assert dropdown_value == REMOVE_VOCALS
+    assert "target_noise_suppression_manual_only" in markdown
 
 
 def test_auto_mode_with_router_music_keeps_current_task_dropdown(tmp_path: Path) -> None:

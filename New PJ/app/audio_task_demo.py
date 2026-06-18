@@ -48,9 +48,10 @@ FEATURE_FIELDS = [
 ]
 SPEECH_INTENT = "Speech / noisy speech"
 MUSIC_INTENT = "Music or music video with vocals"
+TARGET_NOISE_INTENT = "Target noise reduction (experimental)"
 AUTO_INTENT = "Auto detect / not sure"
 UNKNOWN_INTENT = "Unknown / not sure"
-CONTENT_INTENTS = [AUTO_INTENT, SPEECH_INTENT, MUSIC_INTENT, UNKNOWN_INTENT]
+CONTENT_INTENTS = [AUTO_INTENT, SPEECH_INTENT, MUSIC_INTENT, TARGET_NOISE_INTENT, UNKNOWN_INTENT]
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 ROUTER_CHECKPOINT_ENV_VAR = "AUDIO_ROUTER_CHECKPOINT"
 ROUTER_CONFIDENCE_THRESHOLD = 0.90
@@ -193,6 +194,8 @@ def _planner_goal_for_intent(content_intent: str) -> str:
         return IMPROVE_SPEECH_CLARITY
     if content_intent == MUSIC_INTENT:
         return EXTRACT_VOCALS_GOAL
+    if content_intent == TARGET_NOISE_INTENT:
+        return REDUCE_TARGET_NOISE
     if content_intent == AUTO_INTENT:
         return AUTO
     return ANALYZE_ONLY
