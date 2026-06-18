@@ -25,7 +25,9 @@ ACTION_NO_PROCESS = "no_process"
 
 WARNING_ROUTER_GOAL_MISMATCH = "router_goal_mismatch"
 WARNING_SILENCE_OR_NEAR_SILENCE = "silence_or_near_silence"
+WARNING_INPUT_TOO_SHORT = "input_too_short"
 WARNING_MANUAL_MUSIC_TASK_SELECTION_REQUIRED = "manual_music_task_selection_required"
+WARNING_TARGET_SUPPRESSOR_EXPERIMENTAL = "target_suppressor_experimental"
 
 BLOCK_INVALID_MEDIA = "invalid_media"
 BLOCK_INVALID_DURATION = "invalid_duration"
@@ -161,6 +163,16 @@ def plan_processing(
     if hard_guard is not None:
         return hard_guard
 
+    if facts.duration_sec is not None and facts.duration_sec < 0.3:
+        return ProcessingPlan(
+            mode=MODE_ANALYZE_ONLY,
+            goal=goal,
+            action=ACTION_ANALYZE_ONLY,
+            warnings=[WARNING_INPUT_TOO_SHORT],
+            expected_outputs=["analysis_evidence"],
+            explanation="The input is too short for a reliable processing decision.",
+        )
+
     if facts.rms_energy is not None and facts.rms_energy < SILENCE_RMS_THRESHOLD:
         return ProcessingPlan(
             mode=MODE_ANALYZE_ONLY,
@@ -182,14 +194,19 @@ def plan_processing(
     if goal == AUTO:
         return _plan_auto(goal, router, available)
     if goal == REDUCE_TARGET_NOISE:
+        warnings = _router_warnings(router)
+        _append_unique(warnings, WARNING_TARGET_SUPPRESSOR_EXPERIMENTAL)
         return ProcessingPlan(
             mode=MODE_GOAL_DRIVEN,
             goal=goal,
             action=ACTION_MANUAL_REQUIRED,
-            warnings=_router_warnings(router),
+            warnings=warnings,
             blocked_reasons=[BLOCK_TARGET_NOISE_SUPPRESSION_MANUAL_ONLY],
             alternatives=[CLEAN_VOICE] if available.clean_voice_available else [],
-            explanation="Target-noise suppression is experimental and requires manual selection.",
+            explanation=(
+                "The target suppressor is experimental and manual-only; "
+                "clean_voice is the safer automatic alternative when appropriate."
+            ),
         )
     if goal in _GOAL_TASK_POLICIES:
         return _plan_goal_task(goal, router, available)
@@ -300,33 +317,20 @@ def _plan_auto(
             explanation="Environment-only input is outside automatic processing scope.",
         )
     if label == "speech_target_noise":
-        return ProcessingPlan(
-            mode=MODE_AUTO_RECOMMENDATION,
+        _append_unique(warnings, WARNING_TARGET_SUPPRESSOR_EXPERIMENTAL)
+        return _plan_auto_clean_voice(
             goal=goal,
-            action=ACTION_MANUAL_REQUIRED,
+            capabilities=capabilities,
             warnings=warnings,
-            blocked_reasons=[BLOCK_TARGET_NOISE_SUPPRESSION_MANUAL_ONLY],
-            alternatives=[CLEAN_VOICE] if capabilities.clean_voice_available else [],
-            explanation="Target-noise suppression is experimental and requires manual selection.",
+            explanation=(
+                "Target-specific suppression is experimental, so accepted target-noise speech "
+                "falls back to clean_voice rather than the target suppressor."
+            ),
         )
     if label in {"speech_noise", "speech_noisy_general"}:
-        if not capabilities.clean_voice_available:
-            return ProcessingPlan(
-                mode=MODE_AUTO_RECOMMENDATION,
-                goal=goal,
-                action=ACTION_MANUAL_REQUIRED,
-                warnings=warnings,
-                blocked_reasons=[BLOCK_ENGINE_UNAVAILABLE],
-                explanation="The recommended clean_voice engine is unavailable.",
-            )
-        return ProcessingPlan(
-            mode=MODE_AUTO_RECOMMENDATION,
+        return _plan_auto_clean_voice(
             goal=goal,
-            action=ACTION_RUN_TASK,
-            recommended_task=CLEAN_VOICE,
-            engine_family="speech_enhancement",
-            algorithm="DeepFilterNet",
-            expected_outputs=["restored"],
+            capabilities=capabilities,
             warnings=warnings,
             explanation="The accepted router evidence indicates noisy speech suitable for clean_voice.",
         )
@@ -354,6 +358,35 @@ def _plan_auto(
         warnings=warnings,
         blocked_reasons=[BLOCK_UNKNOWN_ROUTER_LABEL],
         explanation="The accepted router label has no automatic processing policy.",
+    )
+
+
+def _plan_auto_clean_voice(
+    *,
+    goal: str,
+    capabilities: ProcessingCapabilities,
+    warnings: list[str],
+    explanation: str,
+) -> ProcessingPlan:
+    if not capabilities.clean_voice_available:
+        return ProcessingPlan(
+            mode=MODE_AUTO_RECOMMENDATION,
+            goal=goal,
+            action=ACTION_MANUAL_REQUIRED,
+            warnings=warnings,
+            blocked_reasons=[BLOCK_ENGINE_UNAVAILABLE],
+            explanation="The recommended clean_voice engine is unavailable.",
+        )
+    return ProcessingPlan(
+        mode=MODE_AUTO_RECOMMENDATION,
+        goal=goal,
+        action=ACTION_RUN_TASK,
+        recommended_task=CLEAN_VOICE,
+        engine_family="speech_enhancement",
+        algorithm="DeepFilterNet",
+        expected_outputs=["restored"],
+        warnings=warnings,
+        explanation=explanation,
     )
 
 

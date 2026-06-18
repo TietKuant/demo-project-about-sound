@@ -94,6 +94,7 @@ def test_analyze_demo_input_recommends_clean_voice_for_speech_intent(tmp_path: P
     assert ["duration_sec", "9.000000"] in table
     assert ["rms_energy", "0.0500000000"] in table
     assert "Router status:** `disabled`" in markdown
+    assert "### Controller decision" in markdown
     assert "### Processing plan" in markdown
     assert "Recommended task:** `clean_voice`" in markdown
 
@@ -134,9 +135,12 @@ def test_target_noise_intent_analysis_shows_manual_only_policy(tmp_path: Path) -
         markdown, _table, recommended_task = analyze_demo_input(input_path, TARGET_NOISE_INTENT)
 
     assert recommended_task is None
+    assert "### Controller decision" in markdown
     assert "Action:** `manual_required`" in markdown
     assert "target_noise_suppression_manual_only" in markdown
+    assert "target_suppressor_experimental" in markdown
     assert "Alternatives:** `clean_voice`" in markdown
+    assert "Target suppressor is experimental/manual-only" in markdown
 
 
 def test_target_noise_intent_analysis_keeps_current_task_dropdown(tmp_path: Path) -> None:
@@ -266,7 +270,7 @@ def test_auto_accepted_noisy_speech_recommends_clean_voice_through_planner(tmp_p
     assert "Algorithm:** `DeepFilterNet`" in markdown
 
 
-def test_auto_accepted_target_noise_requires_manual_selection(tmp_path: Path) -> None:
+def test_auto_accepted_target_noise_uses_clean_voice_fallback(tmp_path: Path) -> None:
     input_path = tmp_path / "speech.wav"
     input_path.write_bytes(b"audio")
     router_result = {
@@ -288,10 +292,27 @@ def test_auto_accepted_target_noise_requires_manual_selection(tmp_path: Path) ->
     ):
         markdown, _table, recommended_task = analyze_demo_input(input_path, AUTO_INTENT)
 
-    assert recommended_task is None
-    assert "Action:** `manual_required`" in markdown
-    assert "target_noise_suppression_manual_only" in markdown
+    assert recommended_task == CLEAN_VOICE
+    assert "Decision:** `run_task`" in markdown
+    assert "Recommended next step:** `clean_voice`" in markdown
+    assert "Algorithm:** `DeepFilterNet`" in markdown
+    assert "target_suppressor_experimental" in markdown
     assert "Recommended task:** `target_noise_suppression`" not in markdown
+
+
+def test_very_short_input_is_analysis_only(tmp_path: Path) -> None:
+    input_path = tmp_path / "short.wav"
+    input_path.write_bytes(b"audio")
+
+    with patch(
+        "app.audio_task_demo._extract_feature_row",
+        return_value=_feature_row(duration_sec="0.200000"),
+    ):
+        markdown, _table, recommended_task = analyze_demo_input(input_path, SPEECH_INTENT)
+
+    assert recommended_task is None
+    assert "Decision:** `analyze_only`" in markdown
+    assert "input_too_short" in markdown
 
 
 def test_extract_vocals_target_noise_router_keeps_goal_with_mismatch_warning(tmp_path: Path) -> None:

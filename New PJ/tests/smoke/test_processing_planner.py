@@ -16,8 +16,10 @@ from src.planner.processing_planner import (
     EXTRACT_VOCALS_GOAL,
     IMPROVE_SPEECH_CLARITY,
     REDUCE_TARGET_NOISE,
+    WARNING_INPUT_TOO_SHORT,
     WARNING_ROUTER_GOAL_MISMATCH,
     WARNING_SILENCE_OR_NEAR_SILENCE,
+    WARNING_TARGET_SUPPRESSOR_EXPERIMENTAL,
     ProcessingCapabilities,
     ProcessingFacts,
     RouterEvidence,
@@ -104,6 +106,7 @@ def test_reduce_target_noise_remains_manual_only_for_matching_router_label() -> 
     assert plan.action == ACTION_MANUAL_REQUIRED
     assert plan.recommended_task is None
     assert BLOCK_TARGET_NOISE_SUPPRESSION_MANUAL_ONLY in plan.blocked_reasons
+    assert WARNING_TARGET_SUPPRESSOR_EXPERIMENTAL in plan.warnings
     assert CLEAN_VOICE in plan.alternatives
 
 
@@ -118,7 +121,7 @@ def test_auto_with_disabled_router_requires_manual_selection() -> None:
     assert plan.blocked_reasons == [BLOCK_ROUTER_NOT_TRUSTED]
 
 
-def test_auto_target_noise_requires_manual_selection() -> None:
+def test_auto_target_noise_uses_safe_clean_voice_fallback() -> None:
     plan = plan_processing(
         AUTO,
         ProcessingFacts(input_type="audio"),
@@ -129,10 +132,11 @@ def test_auto_target_noise_requires_manual_selection() -> None:
         ),
     )
 
-    assert plan.action == ACTION_MANUAL_REQUIRED
-    assert plan.recommended_task is None
-    assert plan.blocked_reasons == [BLOCK_TARGET_NOISE_SUPPRESSION_MANUAL_ONLY]
-    assert plan.alternatives == [CLEAN_VOICE]
+    assert plan.action == ACTION_RUN_TASK
+    assert plan.recommended_task == CLEAN_VOICE
+    assert plan.algorithm == "DeepFilterNet"
+    assert WARNING_TARGET_SUPPRESSOR_EXPERIMENTAL in plan.warnings
+    assert plan.blocked_reasons == []
 
 
 def test_auto_clean_speech_does_not_process() -> None:
@@ -186,6 +190,24 @@ def test_auto_noisy_speech_without_clean_voice_requires_manual_selection() -> No
     assert plan.blocked_reasons == [BLOCK_ENGINE_UNAVAILABLE]
 
 
+def test_auto_target_noise_without_clean_voice_requires_manual_selection() -> None:
+    plan = plan_processing(
+        AUTO,
+        ProcessingFacts(input_type="audio"),
+        RouterEvidence(
+            router_status="enabled",
+            predicted_label="speech_target_noise",
+            accepted=True,
+        ),
+        ProcessingCapabilities(clean_voice_available=False),
+    )
+
+    assert plan.action == ACTION_MANUAL_REQUIRED
+    assert plan.recommended_task is None
+    assert plan.blocked_reasons == [BLOCK_ENGINE_UNAVAILABLE]
+    assert WARNING_TARGET_SUPPRESSOR_EXPERIMENTAL in plan.warnings
+
+
 def test_invalid_media_is_a_hard_block() -> None:
     plan = plan_processing(
         IMPROVE_SPEECH_CLARITY,
@@ -204,6 +226,18 @@ def test_invalid_duration_is_a_hard_block() -> None:
 
     assert plan.action == ACTION_MANUAL_REQUIRED
     assert plan.blocked_reasons == [BLOCK_INVALID_DURATION]
+
+
+def test_short_input_is_analyzed_without_processing() -> None:
+    plan = plan_processing(
+        IMPROVE_SPEECH_CLARITY,
+        ProcessingFacts(input_type="audio", duration_sec=0.2),
+    )
+
+    assert plan.action == ACTION_ANALYZE_ONLY
+    assert plan.recommended_task is None
+    assert plan.warnings == [WARNING_INPUT_TOO_SHORT]
+    assert "analysis_evidence" in plan.expected_outputs
 
 
 def test_near_silence_warns_and_analyzes_without_processing() -> None:

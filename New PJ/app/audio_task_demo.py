@@ -18,6 +18,7 @@ from src.planner.processing_planner import (
     ACTION_RUN_TASK,
     ANALYZE_ONLY,
     AUTO,
+    BLOCK_TARGET_NOISE_SUPPRESSION_MANUAL_ONLY,
     EXTRACT_VOCALS_GOAL,
     IMPROVE_SPEECH_CLARITY,
     REDUCE_TARGET_NOISE,
@@ -272,6 +273,27 @@ def _processing_plan_markdown(plan: ProcessingPlan) -> list[str]:
     ]
 
 
+def _controller_decision_markdown(plan: ProcessingPlan) -> list[str]:
+    recommended_task = f"`{plan.recommended_task}`" if plan.recommended_task else "none"
+    safety_items = [*plan.warnings, *plan.blocked_reasons]
+    if plan.alternatives:
+        safety_items.append(f"alternatives: {', '.join(plan.alternatives)}")
+    lines = [
+        "### Controller decision",
+        f"- **Decision:** `{plan.action}`",
+        f"- **Recommended next step:** {recommended_task}",
+        f"- **Why:** {plan.explanation}",
+        f"- **Safety notes:** {_display_values(safety_items)}",
+    ]
+    if BLOCK_TARGET_NOISE_SUPPRESSION_MANUAL_ONLY in plan.blocked_reasons:
+        fallback = "`clean_voice`" if CLEAN_VOICE in plan.alternatives else "manual review"
+        lines.append(
+            "- **Target-aware policy:** Target suppressor is experimental/manual-only. "
+            f"Recommended automatic fallback: {fallback} when appropriate."
+        )
+    return lines
+
+
 def _optional_router_result(input_path: Path) -> dict[str, object]:
     checkpoint_value = os.environ.get(ROUTER_CHECKPOINT_ENV_VAR, "").strip()
     if not checkpoint_value:
@@ -390,7 +412,9 @@ def analyze_demo_input(
         warnings_text = "n/a"
 
     lines = [
-        "### Preflight analysis",
+        *_controller_decision_markdown(plan),
+        "",
+        "### Detailed analysis",
         f"- **Feature extraction status:** `{status}`",
         f"- **Router status:** `{router_result.get('router_status', 'disabled')}`",
         f"- **Router predicted label:** `{router_result.get('predicted_label', '') or 'n/a'}`",
