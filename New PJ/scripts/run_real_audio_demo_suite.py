@@ -42,6 +42,13 @@ REPORT_COLUMNS = [
     "processing_time_sec",
     "human_rating",
     "human_notes",
+    "expected_auto_behavior",
+    "acceptable_routes",
+    "dangerous_routes",
+    "auto_expectation_result",
+    "objective_metric_name",
+    "objective_score_before",
+    "objective_score_after",
     "status",
     "selected_task",
     "router_label",
@@ -237,6 +244,13 @@ def _base_case_summary(row: dict[str, str], input_path: Path) -> dict[str, Any]:
         "processing_time_sec": "",
         "human_rating": row.get("human_rating", ""),
         "human_notes": row.get("human_notes", ""),
+        "expected_auto_behavior": row.get("expected_auto_behavior", ""),
+        "acceptable_routes": row.get("acceptable_routes", ""),
+        "dangerous_routes": row.get("dangerous_routes", ""),
+        "auto_expectation_result": "",
+        "objective_metric_name": row.get("objective_metric_name", ""),
+        "objective_score_before": row.get("objective_score_before", ""),
+        "objective_score_after": row.get("objective_score_after", ""),
         "metadata_warning": "",
         "status": "failed",
         "selected_task": "",
@@ -248,6 +262,36 @@ def _base_case_summary(row: dict[str, str], input_path: Path) -> dict[str, Any]:
         "output_files": [],
         "error": "",
     }
+
+
+def _route_values(value: object) -> set[str]:
+    return {item.strip() for item in str(value or "").split(";") if item.strip()}
+
+
+def _auto_expectation_result(summary: dict[str, Any]) -> str:
+    if summary.get("expected_task") != "auto":
+        return "not_applicable"
+    if summary.get("auto_expectation_result") == "dangerous_failure":
+        return "dangerous_failure"
+
+    acceptable = _route_values(summary.get("acceptable_routes"))
+    dangerous = _route_values(summary.get("dangerous_routes"))
+    if not acceptable and not dangerous:
+        return "unspecified"
+
+    actual = {
+        value
+        for value in (
+            str(summary.get("route_target") or "").strip(),
+            str(summary.get("selected_task") or "").strip(),
+        )
+        if value
+    }
+    if actual & dangerous:
+        return "dangerous_failure"
+    if actual & acceptable:
+        return "pass"
+    return "unexpected_route"
 
 
 def _apply_router_fields(summary: dict[str, Any], router_result: dict[str, Any]) -> None:
@@ -328,6 +372,25 @@ def _run_auto_case(
     _apply_router_fields(summary, router_result)
     route_target = summary["route_target"]
     recommended_task = router_result.get("recommended_task")
+    selected_task = str(recommended_task or route_target)
+    dangerous_routes = _route_values(summary.get("dangerous_routes"))
+    route_candidates = (
+        str(route_target or "").strip(),
+        str(recommended_task or "").strip(),
+        selected_task.strip(),
+    )
+    dangerous_route = next(
+        (candidate for candidate in route_candidates if candidate and candidate in dangerous_routes),
+        "",
+    )
+    if dangerous_route:
+        summary["auto_expectation_result"] = "dangerous_failure"
+        summary["status"] = "abstained"
+        summary["selected_task"] = ""
+        summary["route_target"] = "manual_required"
+        summary["engine_target"] = "none"
+        summary["error"] = f"Blocked dangerous auto route before execution: {dangerous_route}"
+        return
     if router_result.get("accepted") is not True or route_target in {"manual_required", "abstain"}:
         summary["status"] = "abstained"
         summary["error"] = str(router_result.get("decision_reason", "manual_required"))
@@ -344,7 +407,6 @@ def _run_auto_case(
         summary["selected_task"] = route_target
         return
 
-    selected_task = str(recommended_task or route_target)
     if selected_task not in MANUAL_TASKS:
         summary["status"] = "abstained"
         summary["route_target"] = "manual_required"
@@ -499,6 +561,7 @@ def run_real_audio_demo_suite(
             summary["status"] = "failed"
             summary["error"] = str(exc)
         summary["processing_time_sec"] = f"{time.perf_counter() - started_at:.6f}"
+        summary["auto_expectation_result"] = _auto_expectation_result(summary)
         _write_case_summary(case_dir, summary)
         summaries.append(summary)
 

@@ -119,6 +119,7 @@ def test_real_audio_demo_suite_runs_manual_task_and_writes_reports(tmp_path: Pat
     assert rows[0]["input_sample_rate_hz"] == "16000"
     assert rows[0]["input_channels"] == "1"
     assert rows[0]["processing_time_sec"]
+    assert rows[0]["auto_expectation_result"] == "not_applicable"
     case_summary = json.loads((result / "speech-case" / "case_summary.json").read_text(encoding="utf-8"))
     assert case_summary["status"] == "success"
     assert case_summary["output_files"]
@@ -229,6 +230,7 @@ def test_real_audio_demo_suite_auto_abstain_records_manual_required(tmp_path: Pa
     assert row["selected_task"] == ""
     assert "low_confidence" in row["error"]
     assert row["processing_time_sec"]
+    assert row["auto_expectation_result"] == "unspecified"
 
 
 def test_input_metadata_failure_is_non_fatal(tmp_path: Path) -> None:
@@ -259,6 +261,12 @@ def test_real_audio_demo_suite_carries_human_listening_fields(tmp_path: Path) ->
                 "notes": "source note",
                 "human_rating": "4",
                 "human_notes": "Speech is clearer.",
+                "expected_auto_behavior": "manual clean voice processing",
+                "acceptable_routes": "",
+                "dangerous_routes": "",
+                "objective_metric_name": "example_metric",
+                "objective_score_before": "0.42",
+                "objective_score_after": "0.61",
             }
         ],
         fieldnames=[
@@ -269,6 +277,12 @@ def test_real_audio_demo_suite_carries_human_listening_fields(tmp_path: Path) ->
             "notes",
             "human_rating",
             "human_notes",
+            "expected_auto_behavior",
+            "acceptable_routes",
+            "dangerous_routes",
+            "objective_metric_name",
+            "objective_score_before",
+            "objective_score_after",
         ],
     )
 
@@ -289,9 +303,16 @@ def test_real_audio_demo_suite_carries_human_listening_fields(tmp_path: Path) ->
     row = _read_rows(result / "report.csv")[0]
     assert row["human_rating"] == "4"
     assert row["human_notes"] == "Speech is clearer."
+    assert row["expected_auto_behavior"] == "manual clean voice processing"
+    assert row["objective_metric_name"] == "example_metric"
+    assert row["objective_score_before"] == "0.42"
+    assert row["objective_score_after"] == "0.61"
+    assert row["auto_expectation_result"] == "not_applicable"
     case_summary = json.loads((result / "rated-case" / "case_summary.json").read_text(encoding="utf-8"))
     assert case_summary["human_rating"] == "4"
     assert case_summary["human_notes"] == "Speech is clearer."
+    assert case_summary["expected_auto_behavior"] == "manual clean voice processing"
+    assert case_summary["objective_metric_name"] == "example_metric"
 
 
 def test_real_audio_demo_suite_auto_target_noise_abstains(tmp_path: Path) -> None:
@@ -309,7 +330,83 @@ def test_real_audio_demo_suite_auto_target_noise_abstains(tmp_path: Path) -> Non
                 "expected_task": "auto",
                 "description": "",
                 "notes": "",
+                "expected_auto_behavior": "Do not auto-run experimental target suppression.",
+                "acceptable_routes": "manual_required",
+                "dangerous_routes": "target_noise_suppression",
             }
+        ],
+        fieldnames=[
+            "input_path",
+            "case_id",
+            "expected_task",
+            "description",
+            "notes",
+            "expected_auto_behavior",
+            "acceptable_routes",
+            "dangerous_routes",
+        ],
+    )
+    router_result = {
+        "predicted_label": "speech_target_noise",
+        "confidence": 0.96,
+        "accepted": True,
+        "route_target": TARGET_NOISE_SUPPRESSION,
+        "engine_target": "target_noise_suppressor",
+        "recommended_task": TARGET_NOISE_SUPPRESSION,
+        "decision_reason": "accepted_router_prediction",
+    }
+
+    with (
+        patch("scripts.run_real_audio_demo_suite._input_metadata", return_value={}),
+        patch("scripts.run_real_audio_demo_suite._run_router", return_value=router_result),
+        patch("scripts.run_real_audio_demo_suite.run_audio_task") as task_mock,
+    ):
+        result = run_real_audio_demo_suite(
+            manifest_path=manifest,
+            output_root=tmp_path / "outputs",
+            router_checkpoint=checkpoint,
+        )
+
+    task_mock.assert_not_called()
+    row = _read_rows(result / "report.csv")[0]
+    assert row["status"] == "abstained"
+    assert row["route_target"] == "manual_required"
+    assert row["selected_task"] == ""
+    assert "Blocked dangerous auto route before execution" in row["error"]
+    assert TARGET_NOISE_SUPPRESSION in row["error"]
+    assert row["processing_time_sec"]
+    assert row["auto_expectation_result"] == "dangerous_failure"
+
+
+def test_real_audio_demo_suite_auto_target_noise_remains_manual_only(tmp_path: Path) -> None:
+    input_path = tmp_path / "target-noise.wav"
+    checkpoint = tmp_path / "router.pt"
+    input_path.write_bytes(b"audio")
+    checkpoint.write_bytes(b"checkpoint")
+    manifest = tmp_path / "manifest.csv"
+    _write_manifest(
+        manifest,
+        [
+            {
+                "input_path": str(input_path),
+                "case_id": "auto-target-noise-safe-manifest",
+                "expected_task": "auto",
+                "description": "",
+                "notes": "",
+                "expected_auto_behavior": "Require manual target suppression.",
+                "acceptable_routes": "manual_required",
+                "dangerous_routes": "",
+            }
+        ],
+        fieldnames=[
+            "input_path",
+            "case_id",
+            "expected_task",
+            "description",
+            "notes",
+            "expected_auto_behavior",
+            "acceptable_routes",
+            "dangerous_routes",
         ],
     )
     router_result = {
@@ -339,7 +436,7 @@ def test_real_audio_demo_suite_auto_target_noise_abstains(tmp_path: Path) -> Non
     assert row["route_target"] == "manual_required"
     assert row["selected_task"] == ""
     assert "experimental auto target_noise_suppression is disabled" in row["error"].lower()
-    assert row["processing_time_sec"]
+    assert row["auto_expectation_result"] == "pass"
 
 
 def test_real_audio_demo_suite_auto_no_process_does_not_run_engine(tmp_path: Path) -> None:
@@ -357,7 +454,20 @@ def test_real_audio_demo_suite_auto_no_process_does_not_run_engine(tmp_path: Pat
                 "expected_task": "auto",
                 "description": "",
                 "notes": "",
+                "expected_auto_behavior": "No processing for clean speech.",
+                "acceptable_routes": "no_process;manual_required",
+                "dangerous_routes": "clean_voice;target_noise_suppression",
             }
+        ],
+        fieldnames=[
+            "input_path",
+            "case_id",
+            "expected_task",
+            "description",
+            "notes",
+            "expected_auto_behavior",
+            "acceptable_routes",
+            "dangerous_routes",
         ],
     )
     router_result = {
@@ -387,3 +497,70 @@ def test_real_audio_demo_suite_auto_no_process_does_not_run_engine(tmp_path: Pat
     assert row["selected_task"] == "no_process"
     assert row["output_files"] == ""
     assert row["processing_time_sec"]
+    assert row["auto_expectation_result"] == "pass"
+    case_summary = json.loads((result / "auto-no-process" / "case_summary.json").read_text(encoding="utf-8"))
+    assert case_summary["acceptable_routes"] == "no_process;manual_required"
+    assert case_summary["dangerous_routes"] == "clean_voice;target_noise_suppression"
+
+
+def test_real_audio_demo_suite_auto_dangerous_route_is_flagged(tmp_path: Path) -> None:
+    input_path = tmp_path / "environment.wav"
+    checkpoint = tmp_path / "router.pt"
+    input_path.write_bytes(b"audio")
+    checkpoint.write_bytes(b"checkpoint")
+    manifest = tmp_path / "manifest.csv"
+    _write_manifest(
+        manifest,
+        [
+            {
+                "input_path": str(input_path),
+                "case_id": "auto-dangerous",
+                "expected_task": "auto",
+                "description": "Environment-only red-team case",
+                "notes": "",
+                "expected_auto_behavior": "Abstain or classify out of scope.",
+                "acceptable_routes": "manual_required;out_of_scope",
+                "dangerous_routes": "clean_voice;target_noise_suppression",
+            }
+        ],
+        fieldnames=[
+            "input_path",
+            "case_id",
+            "expected_task",
+            "description",
+            "notes",
+            "expected_auto_behavior",
+            "acceptable_routes",
+            "dangerous_routes",
+        ],
+    )
+    router_result = {
+        "predicted_label": "speech_noisy_general",
+        "confidence": 0.96,
+        "accepted": True,
+        "route_target": CLEAN_VOICE,
+        "engine_target": "deepfilternet",
+        "recommended_task": CLEAN_VOICE,
+        "decision_reason": "accepted_router_prediction",
+    }
+
+    with (
+        patch("scripts.run_real_audio_demo_suite._input_metadata", return_value={}),
+        patch("scripts.run_real_audio_demo_suite._run_router", return_value=router_result),
+        patch("scripts.run_real_audio_demo_suite.run_audio_task") as task_mock,
+    ):
+        result = run_real_audio_demo_suite(
+            manifest_path=manifest,
+            output_root=tmp_path / "outputs",
+            router_checkpoint=checkpoint,
+        )
+
+    task_mock.assert_not_called()
+    row = _read_rows(result / "report.csv")[0]
+    assert row["status"] == "abstained"
+    assert row["selected_task"] == ""
+    assert row["route_target"] == "manual_required"
+    assert row["engine_target"] == "none"
+    assert row["auto_expectation_result"] == "dangerous_failure"
+    assert "Blocked dangerous auto route before execution" in row["error"]
+    assert CLEAN_VOICE in row["error"]
