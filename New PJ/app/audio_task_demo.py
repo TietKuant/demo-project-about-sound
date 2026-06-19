@@ -261,7 +261,7 @@ def _processing_plan_markdown(plan: ProcessingPlan) -> list[str]:
     algorithm = f"`{plan.algorithm}`" if plan.algorithm else "none"
     return [
         "",
-        "### Processing plan",
+        "#### Detailed processing plan",
         f"- **Mode:** `{plan.mode}`",
         f"- **Action:** `{plan.action}`",
         f"- **Recommended task:** {recommended_task}",
@@ -273,15 +273,28 @@ def _processing_plan_markdown(plan: ProcessingPlan) -> list[str]:
     ]
 
 
+def _decision_badge(action: str) -> str:
+    return {
+        "run_task": "RUN TASK",
+        "manual_required": "MANUAL REQUIRED",
+        "analyze_only": "ANALYZE ONLY",
+        "no_process": "NO PROCESS",
+    }.get(action, action.replace("_", " ").upper())
+
+
 def _controller_decision_markdown(plan: ProcessingPlan) -> list[str]:
     recommended_task = f"`{plan.recommended_task}`" if plan.recommended_task else "none"
+    engine_algorithm = " / ".join(
+        value for value in (plan.engine_family, plan.algorithm) if value
+    ) or "none"
     safety_items = [*plan.warnings, *plan.blocked_reasons]
     if plan.alternatives:
         safety_items.append(f"alternatives: {', '.join(plan.alternatives)}")
     lines = [
-        "### Controller decision",
-        f"- **Decision:** `{plan.action}`",
+        "### Controller Decision",
+        f"- **Decision:** **{_decision_badge(plan.action)}**",
         f"- **Recommended next step:** {recommended_task}",
+        f"- **Engine/algorithm:** `{engine_algorithm}`",
         f"- **Why:** {plan.explanation}",
         f"- **Safety notes:** {_display_values(safety_items)}",
     ]
@@ -376,6 +389,10 @@ def _probability_summary(probabilities: object) -> str:
     return ", ".join(parts)
 
 
+def _feature_value_summary(row: dict[str, str]) -> str:
+    return ", ".join(f"{field}={row.get(field, '') or 'n/a'}" for field in FEATURE_FIELDS)
+
+
 def analyze_demo_input(
     file_path: str | Path | None,
     content_intent: str = UNKNOWN_INTENT,
@@ -414,8 +431,11 @@ def analyze_demo_input(
     lines = [
         *_controller_decision_markdown(plan),
         "",
-        "### Detailed analysis",
+        "### Detailed evidence",
         f"- **Feature extraction status:** `{status}`",
+        f"- **Feature values:** `{_feature_value_summary(row)}`",
+        f"- **Profile notes:** {' '.join(profile_notes)}",
+        f"- **Processing goal:** `{content_intent}`",
         f"- **Router status:** `{router_result.get('router_status', 'disabled')}`",
         f"- **Router predicted label:** `{router_result.get('predicted_label', '') or 'n/a'}`",
         f"- **Router confidence:** `{confidence_text}`",
@@ -426,8 +446,6 @@ def analyze_demo_input(
         f"- **Router decision reason:** `{router_result.get('decision_reason', 'n/a')}`",
         f"- **Router warnings:** `{warnings_text}`",
         f"- **Router probabilities:** `{_probability_summary(router_result.get('probabilities'))}`",
-        f"- **Content intent:** `{content_intent}`",
-        f"- **Profile notes:** {' '.join(profile_notes)}",
     ]
     lines.extend(_processing_plan_markdown(plan))
     router_error = str(router_result.get("error", ""))
@@ -508,10 +526,11 @@ def create_demo() -> object:
     import gradio as gr
 
     task_names = [task.name for task in list_supported_tasks()]
-    with gr.Blocks(title="ML Audio Processing Demo") as demo:
+    with gr.Blocks(title="Target-Aware Audio Processing Controller", css=DEMO_CSS) as demo:
         gr.Markdown(
-            "# ML Audio Processing Demo\n"
-            "<p class='demo-subtitle'>Analyze an audio/video file, choose a task, and export the processed result.</p>",
+            "# Target-Aware Audio Processing Controller\n"
+            "<p class='demo-subtitle'>Upload audio/video, choose a goal, and let the controller recommend "
+            "a safe processing path.</p>",
             elem_classes=["demo-hero"],
         )
 
@@ -519,15 +538,15 @@ def create_demo() -> object:
             with gr.Column(scale=5, elem_classes=["demo-section"]):
                 gr.Markdown("## Input")
                 upload = gr.File(label="Audio or video input", type="filepath", file_types=["audio", "video"])
-                intent_dropdown = gr.Dropdown(label="Content intent", choices=CONTENT_INTENTS, value=AUTO_INTENT)
-                task_dropdown = gr.Dropdown(label="Task to run", choices=task_names, value=CLEAN_VOICE)
+                intent_dropdown = gr.Dropdown(label="Processing goal", choices=CONTENT_INTENTS, value=AUTO_INTENT)
+                task_dropdown = gr.Dropdown(label="Manual task override", choices=task_names, value=CLEAN_VOICE)
                 with gr.Row():
                     analyze_button = gr.Button("Analyze Input")
                     run_button = gr.Button("Run Task", variant="primary")
 
             with gr.Column(scale=7, elem_classes=["demo-section"]):
-                gr.Markdown("## Analysis & Recommendation")
-                recommended_task = gr.Textbox(label="Recommended task", interactive=False)
+                gr.Markdown("## Controller")
+                recommended_task = gr.Textbox(label="Controller recommendation", interactive=False)
                 analysis_markdown = gr.Markdown(elem_classes=["compact-markdown"])
                 feature_table = gr.Dataframe(headers=["Feature", "Value"], label="Audio feature values", interactive=False)
                 gr.Markdown("## Processing Result")

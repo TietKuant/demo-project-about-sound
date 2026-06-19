@@ -94,8 +94,8 @@ def test_analyze_demo_input_recommends_clean_voice_for_speech_intent(tmp_path: P
     assert ["duration_sec", "9.000000"] in table
     assert ["rms_energy", "0.0500000000"] in table
     assert "Router status:** `disabled`" in markdown
-    assert "### Controller decision" in markdown
-    assert "### Processing plan" in markdown
+    assert "### Controller Decision" in markdown
+    assert "#### Detailed processing plan" in markdown
     assert "Recommended task:** `clean_voice`" in markdown
 
 
@@ -135,12 +135,24 @@ def test_target_noise_intent_analysis_shows_manual_only_policy(tmp_path: Path) -
         markdown, _table, recommended_task = analyze_demo_input(input_path, TARGET_NOISE_INTENT)
 
     assert recommended_task is None
-    assert "### Controller decision" in markdown
+    assert "### Controller Decision" in markdown
     assert "Action:** `manual_required`" in markdown
     assert "target_noise_suppression_manual_only" in markdown
     assert "target_suppressor_experimental" in markdown
     assert "Alternatives:** `clean_voice`" in markdown
     assert "Target suppressor is experimental/manual-only" in markdown
+
+
+def test_controller_decision_precedes_detailed_evidence(tmp_path: Path) -> None:
+    input_path = tmp_path / "speech.wav"
+    input_path.write_bytes(b"audio")
+
+    with patch("app.audio_task_demo._extract_feature_row", return_value=_feature_row()):
+        markdown, _table, _recommended_task = analyze_demo_input(input_path, SPEECH_INTENT)
+
+    assert markdown.index("### Controller Decision") < markdown.index("### Detailed evidence")
+    assert "**RUN TASK**" in markdown
+    assert "Engine/algorithm:** `speech_enhancement / DeepFilterNet`" in markdown
 
 
 def test_target_noise_intent_analysis_keeps_current_task_dropdown(tmp_path: Path) -> None:
@@ -293,7 +305,7 @@ def test_auto_accepted_target_noise_uses_clean_voice_fallback(tmp_path: Path) ->
         markdown, _table, recommended_task = analyze_demo_input(input_path, AUTO_INTENT)
 
     assert recommended_task == CLEAN_VOICE
-    assert "Decision:** `run_task`" in markdown
+    assert "Decision:** **RUN TASK**" in markdown
     assert "Recommended next step:** `clean_voice`" in markdown
     assert "Algorithm:** `DeepFilterNet`" in markdown
     assert "target_suppressor_experimental" in markdown
@@ -311,7 +323,7 @@ def test_very_short_input_is_analysis_only(tmp_path: Path) -> None:
         markdown, _table, recommended_task = analyze_demo_input(input_path, SPEECH_INTENT)
 
     assert recommended_task is None
-    assert "Decision:** `analyze_only`" in markdown
+    assert "Decision:** **ANALYZE ONLY**" in markdown
     assert "input_too_short" in markdown
 
 
