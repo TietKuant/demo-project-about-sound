@@ -561,13 +561,6 @@ def create_demo() -> object:
             concurrency_limit=1,
             concurrency_id="audio-task-demo",
         )
-        upload.change(
-            fn=analyze_demo_input_for_ui,
-            inputs=[upload, intent_dropdown, task_dropdown],
-            outputs=[analysis_markdown, feature_table, recommended_task, task_dropdown],
-            concurrency_limit=1,
-            concurrency_id="audio-task-demo",
-        )
         run_button.click(
             fn=run_demo_task,
             inputs=[upload, task_dropdown, intent_dropdown],
