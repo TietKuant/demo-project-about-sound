@@ -84,3 +84,7 @@ tmp/
 
 # Generated report figures
 docs/report/figures/
+
+# Frontend generated artifacts
+frontend/node_modules/
+frontend/dist/
