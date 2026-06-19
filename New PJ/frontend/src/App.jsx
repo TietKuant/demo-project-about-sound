@@ -54,6 +54,60 @@ function SafetyNotes({ controller }) {
   );
 }
 
+function PipelineStrip({ file, analysis, controller, runResult }) {
+  const stages = [
+    ["Upload", Boolean(file)],
+    ["Analyze", Boolean(analysis)],
+    ["Decide", Boolean(controller)],
+    ["Run", Boolean(runResult)],
+    ["Output", Boolean(runResult?.download_url)],
+  ];
+  return (
+    <nav className="pipeline-strip" aria-label="Processing pipeline">
+      {stages.map(([label, active], index) => (
+        <div className={`pipeline-stage ${active ? "active" : ""}`} key={label}>
+          <span>{index + 1}</span>
+          <strong>{label}</strong>
+        </div>
+      ))}
+    </nav>
+  );
+}
+
+function MediaPlayer({ src, filename }) {
+  const isVideo = /\.(mp4|mov|mkv|avi|webm)$/i.test(filename || "");
+  return isVideo ? <video controls src={src} /> : <audio controls src={src} />;
+}
+
+function SelectedPath({ controller }) {
+  const gateBlocked = controller.decision === "manual_required";
+  const runsEngine = controller.decision === "run_task";
+  const noProcessing = ["no_process", "analyze_only"].includes(controller.decision);
+  return (
+    <div className="selected-path">
+      <div className="path-node active"><small>Source</small><strong>Input</strong></div>
+      <span>→</span>
+      <div className="path-node active"><small>Signal</small><strong>Evidence</strong></div>
+      <span>→</span>
+      <div className={`path-node active ${gateBlocked ? "blocked" : ""}`}>
+        <small>Safety</small>
+        <strong>{gateBlocked ? "Policy block" : "Policy gate"}</strong>
+      </div>
+      <span>→</span>
+      <div className={`path-node ${runsEngine || noProcessing ? "active" : ""} ${noProcessing ? "neutral" : ""}`}>
+        <small>Action</small>
+        <strong>
+          {runsEngine
+            ? controller.algorithm || controller.recommended_task
+            : noProcessing
+              ? "No processing"
+              : "Manual review"}
+        </strong>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [file, setFile] = useState(null);
   const [goal, setGoal] = useState("auto");
@@ -130,8 +184,9 @@ export default function App() {
   }, [controller]);
 
   const modeLabel = goal === "auto"
-    ? "Automatic recommendation mode"
-    : "Directed goal verification";
+    ? "Automatic recommendation mode — the controller only runs a task when evidence is trusted."
+    : "Directed goal verification — the controller checks whether the selected goal maps to a safe engine.";
+  const inputUrl = analysis ? `/api/files/${analysis.file_id}?kind=input` : "";
 
   return (
     <main className="app-shell">
@@ -233,6 +288,38 @@ export default function App() {
         </aside>
 
         <section className="main-panel">
+          <PipelineStrip
+            file={file}
+            analysis={analysis}
+            controller={controller}
+            runResult={runResult}
+          />
+
+          {analysis && (
+            <section className="input-preview-card">
+              <div className="card-heading">
+                <div>
+                  <p className="eyebrow">INPUT PREVIEW</p>
+                  <h2>{analysis.filename}</h2>
+                </div>
+                <span className="file-chip">{file?.type || "media"}</span>
+              </div>
+              <MediaPlayer src={inputUrl} filename={analysis.filename} />
+              <div className="fact-row">
+                <div><span>Duration</span><strong>{analysis.features.duration_sec || "n/a"} s</strong></div>
+                <div><span>RMS</span><strong>{analysis.features.rms_energy || "n/a"}</strong></div>
+                <div><span>Centroid</span><strong>{analysis.features.spectral_centroid_hz || "n/a"} Hz</strong></div>
+                <div>
+                  <span>Router</span>
+                  <strong>
+                    {analysis.router.predicted_label || "No trusted label"}
+                    {analysis.router.confidence != null ? ` · ${Number(analysis.router.confidence).toFixed(2)}` : ""}
+                  </strong>
+                </div>
+              </div>
+            </section>
+          )}
+
           <div className={`decision-card ${isExperimental ? "experimental" : ""}`}>
             <div className="decision-topline">
               <div>
@@ -249,6 +336,8 @@ export default function App() {
 
             {controller ? (
               <>
+                <div className="plan-label">Selected path</div>
+                <SelectedPath controller={controller} />
                 <div className="decision-grid">
                   <div>
                     <span>Recommended next step</span>
@@ -274,6 +363,15 @@ export default function App() {
               <div className="empty-state">
                 <div className="wave">▂▄▆█▆▄▂</div>
                 <p>Analyze a file to see the safe processing recommendation.</p>
+                <div className="proof-card">
+                  <strong>What this demo proves</strong>
+                  <ul>
+                    <li>Safe abstention when confidence is low</li>
+                    <li>Goal-directed routing for clear user intent</li>
+                    <li>Expert execution through DeepFilterNet and Demucs</li>
+                    <li>Experimental target suppression is blocked by policy</li>
+                  </ul>
+                </div>
               </div>
             )}
           </div>
@@ -311,16 +409,36 @@ export default function App() {
 
           {runResult && (
             <section className={`output-card ${runResult.status === "blocked" ? "blocked" : ""}`}>
-              <div>
-                <p className="eyebrow">PROCESSING OUTPUT</p>
-                <h2>{runResult.status === "blocked" ? "Run blocked safely" : "Output ready"}</h2>
-                <p>{runResult.error || runResult.controller?.why}</p>
-              </div>
-              {runResult.download_url && (
-                <div className="media-output">
-                  <audio controls src={runResult.download_url} />
-                  <a href={runResult.download_url} download>Download processed file</a>
+              {runResult.status === "blocked" ? (
+                <div className="policy-block">
+                  <p className="eyebrow">POLICY GATE</p>
+                  <h2>Run blocked safely</h2>
+                  <p>{runResult.controller?.why || "The selected task is not permitted for automatic execution."}</p>
+                  <SafetyNotes controller={runResult.controller} />
                 </div>
+              ) : (
+                <>
+                  <div className="output-heading">
+                    <p className="eyebrow">PROCESSING OUTPUT</p>
+                    <h2>Before and after</h2>
+                    <p>{runResult.error || runResult.controller?.why}</p>
+                  </div>
+                  <div className="comparison-grid">
+                    <div className="media-panel">
+                      <span>Before</span>
+                      <MediaPlayer src={inputUrl} filename={analysis?.filename} />
+                    </div>
+                    {runResult.download_url && (
+                      <div className="media-panel after">
+                        <span>After</span>
+                        <MediaPlayer src={runResult.download_url} filename={runResult.primary_output_path} />
+                        <a className="download-button" href={runResult.download_url} download>
+                          Download processed file
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                </>
               )}
             </section>
           )}
