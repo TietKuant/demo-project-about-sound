@@ -20,6 +20,10 @@ from src.planner.processing_planner import (
     WARNING_ROUTER_GOAL_MISMATCH,
     WARNING_SILENCE_OR_NEAR_SILENCE,
     WARNING_TARGET_SUPPRESSOR_EXPERIMENTAL,
+    WORKFLOW_MUSIC_SEPARATION_PACKAGE,
+    WORKFLOW_SAFE_ABSTAIN,
+    WORKFLOW_SPEECH_CLEANUP,
+    WORKFLOW_TARGET_NOISE_GUARD,
     ProcessingCapabilities,
     ProcessingFacts,
     RouterEvidence,
@@ -36,6 +40,8 @@ def test_improve_speech_clarity_without_router_runs_clean_voice() -> None:
 
     assert plan.action == ACTION_RUN_TASK
     assert plan.recommended_task == CLEAN_VOICE
+    assert plan.workflow_kind == WORKFLOW_SPEECH_CLEANUP
+    assert plan.recommended_tasks == [CLEAN_VOICE]
     assert plan.algorithm == "DeepFilterNet"
     assert plan.blocked_reasons == []
 
@@ -106,6 +112,7 @@ def test_reduce_target_noise_remains_manual_only_for_matching_router_label() -> 
     assert plan.action == ACTION_MANUAL_REQUIRED
     assert plan.recommended_task is None
     assert BLOCK_TARGET_NOISE_SUPPRESSION_MANUAL_ONLY in plan.blocked_reasons
+    assert plan.workflow_kind == WORKFLOW_TARGET_NOISE_GUARD
     assert WARNING_TARGET_SUPPRESSOR_EXPERIMENTAL in plan.warnings
     assert CLEAN_VOICE in plan.alternatives
 
@@ -119,6 +126,26 @@ def test_auto_with_disabled_router_requires_manual_selection() -> None:
 
     assert plan.action == ACTION_MANUAL_REQUIRED
     assert plan.blocked_reasons == [BLOCK_ROUTER_NOT_TRUSTED]
+    assert plan.workflow_kind == WORKFLOW_SAFE_ABSTAIN
+
+
+def test_auto_low_confidence_router_uses_safe_abstain_workflow() -> None:
+    plan = plan_processing(
+        AUTO,
+        ProcessingFacts(input_type="audio"),
+        RouterEvidence(
+            router_status="enabled",
+            predicted_label="speech_noisy_general",
+            confidence=0.72,
+            accepted=False,
+            decision_reason="low_confidence",
+        ),
+    )
+
+    assert plan.action == ACTION_MANUAL_REQUIRED
+    assert plan.workflow_kind == WORKFLOW_SAFE_ABSTAIN
+    assert plan.blocked_reasons == [BLOCK_ROUTER_NOT_TRUSTED]
+    assert plan.recommended_tasks == []
 
 
 def test_auto_target_noise_uses_safe_clean_voice_fallback() -> None:
@@ -134,6 +161,8 @@ def test_auto_target_noise_uses_safe_clean_voice_fallback() -> None:
 
     assert plan.action == ACTION_RUN_TASK
     assert plan.recommended_task == CLEAN_VOICE
+    assert plan.workflow_kind == WORKFLOW_SPEECH_CLEANUP
+    assert plan.recommended_tasks == [CLEAN_VOICE]
     assert plan.algorithm == "DeepFilterNet"
     assert WARNING_TARGET_SUPPRESSOR_EXPERIMENTAL in plan.warnings
     assert plan.blocked_reasons == []
@@ -171,6 +200,30 @@ def test_auto_noisy_speech_runs_clean_voice() -> None:
     assert plan.engine_family == "speech_enhancement"
     assert plan.algorithm == "DeepFilterNet"
     assert "restored" in plan.expected_outputs
+    assert plan.workflow_kind == WORKFLOW_SPEECH_CLEANUP
+    assert plan.recommended_tasks == [CLEAN_VOICE]
+
+
+def test_auto_music_with_vocals_creates_separation_package() -> None:
+    plan = plan_processing(
+        AUTO,
+        ProcessingFacts(input_type="audio"),
+        RouterEvidence(
+            router_status="enabled",
+            predicted_label="music_with_vocals",
+            confidence=0.97,
+            accepted=True,
+            warnings=["manual_music_task_selection_required"],
+        ),
+    )
+
+    assert plan.action == ACTION_RUN_TASK
+    assert plan.workflow_kind == WORKFLOW_MUSIC_SEPARATION_PACKAGE
+    assert plan.recommended_task == EXTRACT_VOCALS
+    assert plan.recommended_tasks == [EXTRACT_VOCALS]
+    assert plan.expected_outputs == ["vocals", "no_vocals"]
+    assert "manual_music_task_selection_required" not in plan.warnings
+    assert "full vocal/accompaniment package" in plan.explanation
 
 
 def test_auto_noisy_speech_without_clean_voice_requires_manual_selection() -> None:

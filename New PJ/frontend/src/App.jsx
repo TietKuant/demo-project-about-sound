@@ -55,12 +55,13 @@ function SafetyNotes({ controller }) {
 }
 
 function PipelineStrip({ file, analysis, controller, runResult }) {
+  const hasOutput = Boolean(runResult?.outputs?.length || runResult?.download_url);
   const stages = [
     ["Upload", Boolean(file)],
     ["Analyze", Boolean(analysis)],
     ["Decide", Boolean(controller)],
     ["Run", Boolean(runResult)],
-    ["Output", Boolean(runResult?.download_url)],
+    ["Output", hasOutput],
   ];
   return (
     <nav className="pipeline-strip" aria-label="Processing pipeline">
@@ -171,6 +172,29 @@ export default function App() {
     }
   }
 
+  async function runControllerPlan() {
+    if (!analysis?.file_id) {
+      setError("Analyze the file before running the controller plan.");
+      return;
+    }
+    setBusy("recommended");
+    setError("");
+    try {
+      const payload = await readJson(
+        await fetch("/api/run-plan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ file_id: analysis.file_id }),
+        }),
+      );
+      setRunResult(payload);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
   const decisionTitle = useMemo(() => {
     if (!controller) return "WAITING FOR ANALYSIS";
     if (controller.decision === "run_task") {
@@ -253,10 +277,10 @@ export default function App() {
             </button>
             <button
               className="primary"
-              onClick={() => runTask(controller.recommended_task, "recommended")}
-              disabled={Boolean(busy) || !controller?.recommended_task}
+              onClick={runControllerPlan}
+              disabled={Boolean(busy) || controller?.decision !== "run_task"}
             >
-              {busy === "recommended" ? "Running…" : "Run recommended task"}
+              {busy === "recommended" ? "Running…" : "Run controller plan"}
             </button>
           </div>
 
@@ -416,6 +440,12 @@ export default function App() {
                   <p>{runResult.controller?.why || "The selected task is not permitted for automatic execution."}</p>
                   <SafetyNotes controller={runResult.controller} />
                 </div>
+              ) : runResult.status === "no_process" ? (
+                <div className="policy-block no-process">
+                  <p className="eyebrow">CONTROLLER PLAN</p>
+                  <h2>No processing needed</h2>
+                  <p>{runResult.controller?.why}</p>
+                </div>
               ) : (
                 <>
                   <div className="output-heading">
@@ -428,15 +458,29 @@ export default function App() {
                       <span>Before</span>
                       <MediaPlayer src={inputUrl} filename={analysis?.filename} />
                     </div>
-                    {runResult.download_url && (
-                      <div className="media-panel after">
-                        <span>After</span>
-                        <MediaPlayer src={runResult.download_url} filename={runResult.primary_output_path} />
-                        <a className="download-button" href={runResult.download_url} download>
-                          Download processed file
+                    {(runResult.outputs || (
+                      runResult.download_url
+                        ? [{
+                            label: "processed_output",
+                            path: runResult.primary_output_path,
+                            download_url: runResult.download_url,
+                          }]
+                        : []
+                    )).map((output) => (
+                      <div className="media-panel after" key={output.label}>
+                        <span>
+                          {{
+                            vocals: "Vocals",
+                            no_vocals: "Instrumental",
+                            enhanced_speech: "Enhanced speech",
+                          }[output.label] || output.label.replaceAll("_", " ")}
+                        </span>
+                        <MediaPlayer src={output.download_url} filename={output.path} />
+                        <a className="download-button" href={output.download_url} download>
+                          Download {output.label.replaceAll("_", " ")}
                         </a>
                       </div>
-                    )}
+                    ))}
                   </div>
                 </>
               )}

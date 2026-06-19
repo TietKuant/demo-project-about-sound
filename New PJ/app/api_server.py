@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import shutil
 import uuid
@@ -24,6 +25,9 @@ from app.audio_task_demo import (
 )
 from scripts.run_audio_task import run_audio_task
 from src.planner.processing_planner import (
+    ACTION_ANALYZE_ONLY,
+    ACTION_MANUAL_REQUIRED,
+    ACTION_NO_PROCESS,
     ACTION_RUN_TASK,
     ANALYZE_ONLY,
     AUTO,
@@ -32,6 +36,8 @@ from src.planner.processing_planner import (
     REDUCE_TARGET_NOISE,
     REMOVE_VOCALS_GOAL,
     ProcessingPlan,
+    WORKFLOW_MUSIC_SEPARATION_PACKAGE,
+    WORKFLOW_SPEECH_CLEANUP,
     plan_processing,
 )
 from src.router.task_registry import (
@@ -73,6 +79,10 @@ FEATURE_FIELDS = [
 class RunRequest(BaseModel):
     file_id: str
     task: str
+
+
+class RunPlanRequest(BaseModel):
+    file_id: str
 
 
 api = FastAPI(title="Target-Aware Audio Processing Controller API")
@@ -122,9 +132,12 @@ def _write_metadata(file_id: str, metadata: dict[str, Any]) -> None:
 def _plan_payload(plan: ProcessingPlan) -> dict[str, Any]:
     return {
         "decision": plan.action,
+        "workflow_kind": plan.workflow_kind,
         "recommended_task": plan.recommended_task,
+        "recommended_tasks": plan.recommended_tasks,
         "engine_family": plan.engine_family,
         "algorithm": plan.algorithm,
+        "expected_outputs": plan.expected_outputs,
         "why": plan.explanation,
         "warnings": plan.warnings,
         "blocked_reasons": plan.blocked_reasons,
@@ -147,8 +160,6 @@ def _feature_payload(feature_row: dict[str, str]) -> dict[str, str]:
 
 
 def _read_task_summary(run_dir: Path) -> dict[str, str]:
-    import csv
-
     summary_path = run_dir / "summary.csv"
     if not summary_path.is_file():
         raise HTTPException(status_code=500, detail=f"Task summary not found: {summary_path}")
@@ -159,16 +170,76 @@ def _read_task_summary(run_dir: Path) -> dict[str, str]:
     return rows[0]
 
 
-def _registered_path(metadata: dict[str, Any], kind: str) -> Path:
-    key = "input_path" if kind == "input" else "primary_output_path"
-    value = str(metadata.get(key) or "")
+def _registered_path(metadata: dict[str, Any], kind: str, label: str | None = None) -> Path:
+    if kind == "input":
+        value = str(metadata.get("input_path") or "")
+    elif label:
+        value = str(dict(metadata.get("outputs_by_label") or {}).get(label) or "")
+    else:
+        value = str(metadata.get("primary_output_path") or "")
     if not value:
-        raise HTTPException(status_code=404, detail=f"No registered {kind} file.")
+        detail = f"No registered {kind} file" + (f" for label: {label}" if label else "")
+        raise HTTPException(status_code=404, detail=f"{detail}.")
     path = Path(value).resolve()
     allowed_root = UPLOAD_ROOT.resolve() if kind == "input" else RUN_ROOT.resolve()
     if not path.is_relative_to(allowed_root) or not path.is_file():
         raise HTTPException(status_code=404, detail=f"Registered {kind} file is unavailable.")
     return path
+
+
+def _plan_from_metadata(metadata: dict[str, Any], input_path: Path) -> ProcessingPlan:
+    feature_row = {
+        str(key): str(value)
+        for key, value in dict(metadata.get("features") or {}).items()
+    }
+    router_result = dict(metadata.get("router") or {})
+    return plan_processing(
+        str(metadata.get("goal") or AUTO),
+        _processing_facts(input_path, feature_row),
+        _router_evidence(router_result),
+        _demo_capabilities(),
+    )
+
+
+def _output_artifact(file_id: str, label: str, path: Path) -> dict[str, str]:
+    resolved = path.resolve()
+    if not resolved.is_relative_to(RUN_ROOT.resolve()) or not resolved.is_file():
+        raise HTTPException(status_code=500, detail=f"Output artifact is unavailable: {label}")
+    return {
+        "label": label,
+        "path": str(resolved),
+        "download_url": f"/api/files/{file_id}?kind=output&label={label}",
+        "media_type": "audio",
+    }
+
+
+def _read_music_artifacts(run_dir: Path, file_id: str) -> list[dict[str, str]]:
+    top_summary = (run_dir / "summary.csv").resolve()
+    for summary_path in sorted(run_dir.rglob("summary.csv")):
+        if summary_path.resolve() == top_summary:
+            continue
+        with summary_path.open(newline="", encoding="utf-8") as csv_file:
+            rows = list(csv.DictReader(csv_file))
+        if not rows:
+            continue
+        row = rows[0]
+        vocals_path = str(row.get("vocals_path") or "")
+        no_vocals_path = str(row.get("no_vocals_path") or "")
+        if vocals_path and no_vocals_path:
+            return [
+                _output_artifact(file_id, "vocals", Path(vocals_path)),
+                _output_artifact(file_id, "no_vocals", Path(no_vocals_path)),
+            ]
+    raise HTTPException(status_code=500, detail="Nested music separation summary is unavailable.")
+
+
+def _store_artifacts(metadata: dict[str, Any], artifacts: list[dict[str, str]], run_dir: Path) -> None:
+    metadata["outputs_by_label"] = {
+        artifact["label"]: artifact["path"]
+        for artifact in artifacts
+    }
+    metadata["primary_output_path"] = artifacts[0]["path"] if artifacts else ""
+    metadata["last_run_dir"] = str(run_dir.resolve())
 
 
 @api.get("/api/health")
@@ -217,6 +288,7 @@ async def analyze(file: UploadFile = File(...), goal: str = Form(...)) -> dict[s
         "features": feature_row,
         "router": router_result,
         "primary_output_path": "",
+        "outputs_by_label": {},
     }
     _write_metadata(file_id, metadata)
     return {
@@ -283,10 +355,83 @@ def run(request: RunRequest) -> dict[str, Any]:
     }
 
 
+@api.post("/api/run-plan")
+def run_plan(request: RunPlanRequest) -> dict[str, Any]:
+    metadata = _read_metadata(request.file_id)
+    input_path = _registered_path(metadata, "input")
+    plan = _plan_from_metadata(metadata, input_path)
+
+    if plan.action == ACTION_NO_PROCESS:
+        return {
+            "status": "no_process",
+            "controller": _plan_payload(plan),
+            "run_dir": "",
+            "outputs": [],
+        }
+    if plan.action in {ACTION_MANUAL_REQUIRED, ACTION_ANALYZE_ONLY} or plan.blocked_reasons:
+        return {
+            "status": "blocked",
+            "controller": _plan_payload(plan),
+            "run_dir": "",
+            "outputs": [],
+        }
+    if plan.action != ACTION_RUN_TASK or not plan.recommended_task:
+        return {
+            "status": "blocked",
+            "controller": _plan_payload(plan),
+            "run_dir": "",
+            "outputs": [],
+        }
+
+    task = plan.recommended_task
+    run_dir = run_audio_task(
+        task=task,
+        input_path=input_path,
+        output_root=RUN_ROOT / request.file_id,
+    )
+    summary = _read_task_summary(run_dir)
+    if summary.get("status") != "success":
+        return {
+            "status": summary.get("status", "failed"),
+            "controller": _plan_payload(plan),
+            "run_dir": str(run_dir.resolve()),
+            "outputs": [],
+            "error": summary.get("error", ""),
+        }
+
+    if plan.workflow_kind == WORKFLOW_SPEECH_CLEANUP:
+        primary_path = Path(str(summary.get("primary_output_path") or ""))
+        artifacts = [_output_artifact(request.file_id, "enhanced_speech", primary_path)]
+    elif plan.workflow_kind == WORKFLOW_MUSIC_SEPARATION_PACKAGE or task in {EXTRACT_VOCALS, REMOVE_VOCALS}:
+        artifacts = _read_music_artifacts(run_dir, request.file_id)
+    else:
+        primary_path = Path(str(summary.get("primary_output_path") or ""))
+        label = plan.output_labels[0] if plan.output_labels else task
+        artifacts = [_output_artifact(request.file_id, label, primary_path)]
+
+    _store_artifacts(metadata, artifacts, run_dir)
+    metadata["last_task"] = task
+    _write_metadata(request.file_id, metadata)
+    return {
+        "status": "success",
+        "task": task,
+        "controller": _plan_payload(plan),
+        "run_dir": str(run_dir.resolve()),
+        "outputs": artifacts,
+        "primary_output_path": artifacts[0]["path"],
+        "download_url": artifacts[0]["download_url"],
+        "error": "",
+    }
+
+
 @api.get("/api/files/{file_id}")
-def files(file_id: str, kind: str = Query(default="input", pattern="^(input|output)$")) -> FileResponse:
+def files(
+    file_id: str,
+    kind: str = Query(default="input", pattern="^(input|output)$"),
+    label: str | None = Query(default=None),
+) -> FileResponse:
     metadata = _read_metadata(file_id)
-    path = _registered_path(metadata, kind)
+    path = _registered_path(metadata, kind, label)
     return FileResponse(path)
 
 

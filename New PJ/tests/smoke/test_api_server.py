@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.api_server as api_server
-from src.router.task_registry import CLEAN_VOICE, TARGET_NOISE_SUPPRESSION
+from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, TARGET_NOISE_SUPPRESSION
 
 
 @pytest.fixture()
@@ -45,10 +45,14 @@ def _router_result() -> dict[str, object]:
     }
 
 
-def _analyze(client: TestClient, goal: str = "improve_speech_clarity") -> dict[str, object]:
+def _analyze(
+    client: TestClient,
+    goal: str = "improve_speech_clarity",
+    router_result: dict[str, object] | None = None,
+) -> dict[str, object]:
     with (
         patch("app.api_server._extract_feature_row", return_value=_feature_row()),
-        patch("app.api_server._optional_router_result", return_value=_router_result()),
+        patch("app.api_server._optional_router_result", return_value=router_result or _router_result()),
     ):
         response = client.post(
             "/api/analyze",
@@ -69,6 +73,8 @@ def test_api_analyze_returns_controller_router_and_features(client: TestClient) 
     assert payload["filename"] == "speech.wav"
     assert payload["controller"]["decision"] == "run_task"
     assert payload["controller"]["recommended_task"] == CLEAN_VOICE
+    assert payload["controller"]["workflow_kind"] == "speech_cleanup"
+    assert payload["controller"]["recommended_tasks"] == [CLEAN_VOICE]
     assert payload["router"]["status"] == "disabled"
     assert payload["features"]["duration_sec"] == "2.000000"
 
@@ -139,3 +145,142 @@ def test_api_run_clean_voice_and_serve_output(client: TestClient) -> None:
     output_response = client.get(payload["download_url"])
     assert output_response.status_code == 200
     assert output_response.content == b"restored"
+
+
+def test_api_run_plan_speech_cleanup_returns_labeled_output(client: TestClient) -> None:
+    analyzed = _analyze(client)
+
+    def mock_run_audio_task(**kwargs: object) -> Path:
+        run_dir = Path(kwargs["output_root"]) / CLEAN_VOICE / "plan-run"
+        output_path = run_dir / "speech.restored.wav"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"enhanced")
+        _write_task_summary(run_dir, CLEAN_VOICE, output_path)
+        return run_dir
+
+    with patch("app.api_server.run_audio_task", side_effect=mock_run_audio_task) as run_mock:
+        response = client.post("/api/run-plan", json={"file_id": analyzed["file_id"]})
+
+    run_mock.assert_called_once()
+    assert run_mock.call_args.kwargs["task"] == CLEAN_VOICE
+    payload = response.json()
+    assert payload["status"] == "success"
+    assert payload["controller"]["workflow_kind"] == "speech_cleanup"
+    assert [output["label"] for output in payload["outputs"]] == ["enhanced_speech"]
+    served = client.get(payload["outputs"][0]["download_url"])
+    assert served.status_code == 200
+    assert served.content == b"enhanced"
+
+
+def test_api_run_plan_music_package_returns_vocals_and_instrumental(client: TestClient) -> None:
+    router_result = {
+        "router_status": "enabled",
+        "predicted_label": "music_with_vocals",
+        "confidence": 0.97,
+        "accepted": True,
+        "route_target": "manual_required",
+        "recommended_task": EXTRACT_VOCALS,
+        "decision_reason": "accepted_router_prediction",
+        "warnings": [],
+    }
+    analyzed = _analyze(client, goal="auto", router_result=router_result)
+
+    def mock_run_audio_task(**kwargs: object) -> Path:
+        run_dir = Path(kwargs["output_root"]) / EXTRACT_VOCALS / "plan-run"
+        vocals_path = run_dir / "nested" / "vocals.wav"
+        no_vocals_path = run_dir / "nested" / "no_vocals.wav"
+        vocals_path.parent.mkdir(parents=True, exist_ok=True)
+        vocals_path.write_bytes(b"vocals")
+        no_vocals_path.write_bytes(b"instrumental")
+        _write_task_summary(run_dir, EXTRACT_VOCALS, vocals_path)
+        with (vocals_path.parent / "summary.csv").open("w", newline="", encoding="utf-8") as csv_file:
+            writer = csv.DictWriter(
+                csv_file,
+                fieldnames=[
+                    "run_id",
+                    "input_path",
+                    "task",
+                    "engine",
+                    "status",
+                    "runtime_sec",
+                    "primary_output_label",
+                    "primary_output_path",
+                    "vocals_path",
+                    "no_vocals_path",
+                    "error",
+                ],
+            )
+            writer.writeheader()
+            writer.writerow(
+                {
+                    "run_id": "nested",
+                    "input_path": kwargs["input_path"],
+                    "task": EXTRACT_VOCALS,
+                    "engine": "demucs",
+                    "status": "success",
+                    "runtime_sec": "0.1",
+                    "primary_output_label": "vocals",
+                    "primary_output_path": vocals_path,
+                    "vocals_path": vocals_path,
+                    "no_vocals_path": no_vocals_path,
+                    "error": "",
+                }
+            )
+        return run_dir
+
+    with patch("app.api_server.run_audio_task", side_effect=mock_run_audio_task) as run_mock:
+        response = client.post("/api/run-plan", json={"file_id": analyzed["file_id"]})
+
+    run_mock.assert_called_once()
+    assert run_mock.call_args.kwargs["task"] == EXTRACT_VOCALS
+    payload = response.json()
+    assert payload["controller"]["workflow_kind"] == "music_separation_package"
+    assert [output["label"] for output in payload["outputs"]] == ["vocals", "no_vocals"]
+    assert client.get(payload["outputs"][0]["download_url"]).content == b"vocals"
+    assert client.get(payload["outputs"][1]["download_url"]).content == b"instrumental"
+
+
+def test_api_run_plan_target_noise_goal_remains_blocked(client: TestClient) -> None:
+    analyzed = _analyze(client, goal="reduce_target_noise")
+
+    with patch("app.api_server.run_audio_task") as run_mock:
+        response = client.post("/api/run-plan", json={"file_id": analyzed["file_id"]})
+
+    run_mock.assert_not_called()
+    payload = response.json()
+    assert payload["status"] == "blocked"
+    assert payload["controller"]["workflow_kind"] == "target_noise_guard"
+    assert "target_noise_suppression_manual_only" in payload["controller"]["blocked_reasons"]
+
+
+def _write_task_summary(run_dir: Path, task: str, output_path: Path) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with (run_dir / "summary.csv").open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(
+            csv_file,
+            fieldnames=[
+                "run_id",
+                "task",
+                "engine",
+                "input_path",
+                "input_type",
+                "status",
+                "runtime_sec",
+                "primary_output_path",
+                "error",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "run_id": "plan-run",
+                "task": task,
+                "engine": "deepfilternet" if task == CLEAN_VOICE else "demucs",
+                "input_path": "",
+                "input_type": "audio",
+                "status": "success",
+                "runtime_sec": "0.1",
+                "primary_output_path": output_path,
+                "error": "",
+            }
+        )
