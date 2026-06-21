@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 
 import pytest
 from scripts import create_router_labeling_manifest as labeling
@@ -216,3 +217,40 @@ def test_existing_manifest_can_be_used_without_input_directory(
 def test_manifest_requires_at_least_one_input_source(tmp_path):
     with pytest.raises(ValueError, match="input directory or existing manifest"):
         labeling.create_router_labeling_manifest([], tmp_path / "labels.csv")
+
+
+def test_api_upload_metadata_makes_input_file_labelable(tmp_path, monkeypatch):
+    uploads_dir = tmp_path / "uploads"
+    upload_dir = uploads_dir / "7b78e60c-1bdf-4e9a-b866-7fbd60b44976"
+    upload_dir.mkdir(parents=True)
+    audio_path = upload_dir / "input.wav"
+    audio_path.touch()
+    metadata = {
+        "filename": "street-interview.wav",
+        "file_id": "7b78e60c-1bdf-4e9a-b866-7fbd60b44976",
+        "router": {
+            "predicted_label": "speech_noisy_general",
+            "confidence": 0.87,
+            "accepted": True,
+            "decision_reason": "accepted_router_prediction",
+        },
+    }
+    with (upload_dir / "metadata.json").open("w", encoding="utf-8") as handle:
+        json.dump(metadata, handle)
+
+    monkeypatch.setattr(labeling, "_extract_feature_rows", _fake_feature_rows)
+    output_path = tmp_path / "labels.csv"
+    labeling.create_router_labeling_manifest([uploads_dir], output_path)
+
+    with output_path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["filename"] == "street-interview.wav"
+    assert row["file_id"] == "7b78e60c-1bdf-4e9a-b866-7fbd60b44976"
+    assert row["router_label"] == "speech_noisy_general"
+    assert row["router_confidence"] == "0.87"
+    assert row["router_accepted"] == "true"
+    assert row["router_reason"] == "accepted_router_prediction"
+    assert row["suggested_label"] == "speech_noisy_general"

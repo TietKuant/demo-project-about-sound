@@ -6,10 +6,18 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 
 from scripts.extract_audio_features import extract_audio_features
 from src.io.paths import infer_input_type
@@ -18,6 +26,12 @@ from src.io.paths import infer_input_type
 OUTPUT_COLUMNS = [
     "sample_id",
     "path",
+    "filename",
+    "file_id",
+    "router_label",
+    "router_confidence",
+    "router_accepted",
+    "router_reason",
     "source",
     "duration_sec",
     "rms_energy",
@@ -115,6 +129,56 @@ def _valid_or_blank(value: str, allowed: frozenset[str]) -> str:
     return normalized if normalized in allowed else ""
 
 
+def _csv_value(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return str(value).lower()
+    return str(value)
+
+
+def _api_upload_metadata(path: Path) -> dict[str, str]:
+    fields = {
+        "filename": path.name,
+        "file_id": "",
+        "router_label": "",
+        "router_confidence": "",
+        "router_accepted": "",
+        "router_reason": "",
+        "suggested_label": "",
+    }
+    metadata_path = path.parent / "metadata.json"
+    if not metadata_path.is_file():
+        return fields
+    try:
+        with metadata_path.open(encoding="utf-8") as handle:
+            metadata = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return fields
+    if not isinstance(metadata, dict):
+        return fields
+
+    router = metadata.get("router")
+    if not isinstance(router, dict):
+        router = {}
+    router_label = _csv_value(router.get("predicted_label")).strip()
+    fields.update(
+        {
+            "filename": _csv_value(metadata.get("filename")).strip() or path.name,
+            "file_id": _csv_value(metadata.get("file_id")).strip(),
+            "router_label": router_label,
+            "router_confidence": _csv_value(router.get("confidence")).strip(),
+            "router_accepted": _csv_value(router.get("accepted")).strip(),
+            "router_reason": _csv_value(router.get("decision_reason")).strip(),
+            "suggested_label": _valid_or_blank(
+                router_label,
+                ALLOWED_HUMAN_LABELS,
+            ),
+        }
+    )
+    return fields
+
+
 def _load_existing_candidates(manifest_paths: Sequence[Path]) -> dict[Path, dict[str, str]]:
     candidates: dict[Path, dict[str, str]] = {}
     for manifest_path in manifest_paths:
@@ -136,6 +200,16 @@ def _load_existing_candidates(manifest_paths: Sequence[Path]) -> dict[Path, dict
                 candidates.setdefault(
                     path,
                     {
+                        "filename": (row.get("filename") or path.name).strip(),
+                        "file_id": (row.get("file_id") or "").strip(),
+                        "router_label": (row.get("router_label") or "").strip(),
+                        "router_confidence": (
+                            row.get("router_confidence") or ""
+                        ).strip(),
+                        "router_accepted": (
+                            row.get("router_accepted") or ""
+                        ).strip(),
+                        "router_reason": (row.get("router_reason") or "").strip(),
                         "source": (row.get("source") or manifest_path.stem).strip(),
                         "suggested_label": suggested_label,
                         "human_label": _valid_or_blank(
@@ -165,17 +239,30 @@ def _discover_directory_candidates(
             if not _is_media_file(path):
                 continue
             resolved_path = path.resolve()
-            candidates.setdefault(
-                resolved_path,
-                {
-                    "source": resolved_dir.name,
-                    "suggested_label": "",
-                    "human_label": "",
-                    "workflow_label": "",
-                    "split": "",
-                    "notes": "",
-                },
-            )
+            metadata = _api_upload_metadata(resolved_path)
+            existing = candidates.get(resolved_path)
+            if existing is not None:
+                for field in (
+                    "filename",
+                    "file_id",
+                    "router_label",
+                    "router_confidence",
+                    "router_accepted",
+                    "router_reason",
+                ):
+                    if metadata[field] and not existing.get(field):
+                        existing[field] = metadata[field]
+                if metadata["suggested_label"]:
+                    existing["suggested_label"] = metadata["suggested_label"]
+                continue
+            candidates[resolved_path] = {
+                **metadata,
+                "source": resolved_dir.name,
+                "human_label": "",
+                "workflow_label": "",
+                "split": "",
+                "notes": "",
+            }
 
 
 def _extract_feature_rows(
@@ -289,6 +376,12 @@ def create_router_labeling_manifest(
             {
                 "sample_id": sample_id,
                 "path": str(path),
+                "filename": existing.get("filename", path.name),
+                "file_id": existing.get("file_id", ""),
+                "router_label": existing.get("router_label", ""),
+                "router_confidence": existing.get("router_confidence", ""),
+                "router_accepted": existing.get("router_accepted", ""),
+                "router_reason": existing.get("router_reason", ""),
                 "source": existing.get("source", ""),
                 "duration_sec": features.get("duration_sec", ""),
                 "rms_energy": features.get("rms_energy", ""),
