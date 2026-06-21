@@ -74,6 +74,10 @@ def test_index_contains_filename_and_label_buttons(labeling_ui):
     assert "speech_noisy_general" in response.text
     assert "unknown_mixed" in response.text
     assert "1 labeled / 2 total" in response.text
+    assert "Autoplay" in response.text
+    assert "Space play/pause" in response.text
+    assert "Numpad1" in response.text
+    assert "routerLabelingAutoplay" in response.text
 
 
 def test_known_media_is_served(labeling_ui):

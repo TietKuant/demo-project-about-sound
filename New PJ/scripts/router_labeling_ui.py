@@ -194,7 +194,7 @@ def _render_page(session: ManifestSession, index: int) -> str:
     if media_path is not None:
         tag = "video" if media_path.suffix.lower() in VIDEO_SUFFIXES else "audio"
         media_tag = (
-            f"<{tag} controls preload='metadata' src='/media/"
+            f"<{tag} id='current-media' controls preload='metadata' src='/media/"
             f"{html.escape(sample_id, quote=True)}'></{tag}>"
         )
     label_buttons = "\n".join(
@@ -241,6 +241,7 @@ def _render_page(session: ManifestSession, index: int) -> str:
     dl {{ display: grid; grid-template-columns: 170px 1fr; gap: 7px 14px; }}
     dd {{ margin: 0; overflow-wrap: anywhere; }}
     audio, video {{ width: 100%; max-height: 420px; }}
+    .media-tools {{ display: flex; align-items: center; gap: 10px; margin: 9px 0; }}
     .labels {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 9px; }}
     button {{ border: 1px solid #4a535e; background: #282e35; color: #fff;
       border-radius: 7px; padding: 11px 13px; cursor: pointer; text-align: left; }}
@@ -268,6 +269,10 @@ def _render_page(session: ManifestSession, index: int) -> str:
   <section>
     <h2>{_display(row.get('filename') or Path(row.get('path') or '').name)}</h2>
     {media_tag}
+    <div class="media-tools">
+      <button id="autoplay-toggle" onclick="toggleAutoplay()">Autoplay: off</button>
+      <span id="autoplay-message" class="muted"></span>
+    </div>
     <dl>
       <dt>Path</dt><dd>{_display(row.get('path'))}</dd>
       <dt>Router label</dt><dd>{_display(row.get('router_label'))}</dd>
@@ -281,7 +286,8 @@ def _render_page(session: ManifestSession, index: int) -> str:
   <section>
     <h2>Decision</h2>
     <div class="labels">{label_buttons}</div>
-    <p class="muted">Keyboard shortcuts 1–6 apply a label and advance.</p>
+    <p class="muted">1–6 label | Space play/pause | ←/→ prev/next |
+      U next unlabeled | A autoplay</p>
   </section>
   <section>
     <label for="notes"><strong>Notes</strong></label>
@@ -299,6 +305,44 @@ def _render_page(session: ManifestSession, index: int) -> str:
 <script>
 const page = {page_data};
 const shortcuts = {json.dumps({str(number): label for number, (label, _) in LABEL_SHORTCUTS})};
+const codeShortcuts = {{
+  Numpad1: shortcuts['1'],
+  Numpad2: shortcuts['2'],
+  Numpad3: shortcuts['3'],
+  Numpad4: shortcuts['4'],
+  Numpad5: shortcuts['5'],
+  Numpad6: shortcuts['6']
+}};
+const autoplayStorageKey = 'routerLabelingAutoplay';
+const media = document.getElementById('current-media');
+function autoplayEnabled() {{
+  return localStorage.getItem(autoplayStorageKey) === 'true';
+}}
+function updateAutoplayButton() {{
+  document.getElementById('autoplay-toggle').textContent =
+    'Autoplay: ' + (autoplayEnabled() ? 'on' : 'off');
+}}
+async function playMedia(showBlockedMessage = false) {{
+  if (!media) return;
+  try {{
+    await media.play();
+    document.getElementById('autoplay-message').textContent = '';
+  }} catch (error) {{
+    if (showBlockedMessage) {{
+      document.getElementById('autoplay-message').textContent =
+        'Autoplay blocked; press Space to play.';
+    }}
+  }}
+}}
+function toggleAutoplay() {{
+  localStorage.setItem(autoplayStorageKey, String(!autoplayEnabled()));
+  updateAutoplayButton();
+  if (autoplayEnabled()) playMedia(true);
+}}
+function toggleMedia() {{
+  if (!media) return;
+  if (media.paused) playMedia(); else media.pause();
+}}
 function goTo(index) {{ window.location.href = '/?index=' + index; }}
 async function request(url, body) {{
   const response = await fetch(url, {{
@@ -328,8 +372,31 @@ async function saveNotes() {{
 }}
 document.addEventListener('keydown', event => {{
   if (event.target.matches('textarea, input, select')) return;
-  if (shortcuts[event.key]) {{ event.preventDefault(); saveLabel(shortcuts[event.key]); }}
+  const label = shortcuts[event.key] || codeShortcuts[event.code];
+  if (label) {{
+    event.preventDefault();
+    saveLabel(label);
+    return;
+  }}
+  if (event.code === 'Space') {{
+    event.preventDefault();
+    toggleMedia();
+  }} else if (event.key === 'ArrowLeft') {{
+    event.preventDefault();
+    goTo(page.previousIndex);
+  }} else if (event.key === 'ArrowRight') {{
+    event.preventDefault();
+    goTo(page.nextIndex);
+  }} else if (event.key.toLowerCase() === 'u') {{
+    event.preventDefault();
+    goTo(page.nextUnlabeledIndex);
+  }} else if (event.key.toLowerCase() === 'a') {{
+    event.preventDefault();
+    toggleAutoplay();
+  }}
 }});
+updateAutoplayButton();
+if (autoplayEnabled()) playMedia(true);
 </script>
 </body>
 </html>"""
