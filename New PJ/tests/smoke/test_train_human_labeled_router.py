@@ -28,7 +28,7 @@ def _write_manifest(
                     "path": str(media_path),
                     "filename": media_path.name,
                     "human_label": label,
-                    "workflow_label": "safe_abstain",
+                    "workflow_label": trainer.WORKFLOW_BY_LABEL[label],
                 }
             )
     if blank_label:
@@ -120,6 +120,10 @@ def test_training_writes_expected_artifacts_and_excludes_unknown_by_default(
         "all_error_rows.csv",
         "accepted_error_rows.csv",
         "hard_unknown_accepted.csv",
+        "workflow_confusion_matrix.csv",
+        "workflow_threshold_metrics.csv",
+        "all_workflow_error_rows.csv",
+        "accepted_workflow_error_rows.csv",
     }
     assert expected_files <= {path.name for path in output_dir.iterdir()}
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
@@ -130,8 +134,18 @@ def test_training_writes_expected_artifacts_and_excludes_unknown_by_default(
     assert "confusion_matrix" in metrics
     assert "accepted_accuracy_at_threshold" in metrics
     assert "accepted_errors_at_threshold" in metrics
+    assert "workflow_accuracy" in metrics
+    assert "workflow_accepted_accuracy_at_threshold" in metrics
     assert metrics["hard_unknown_accepted_at_threshold"] == 2
     assert set(metrics["per_class"]) == set(trainer.DEFAULT_LABELS)
+    with (output_dir / "test_predictions.csv").open(
+        newline="",
+        encoding="utf-8",
+    ) as handle:
+        fieldnames = csv.DictReader(handle).fieldnames
+    assert fieldnames is not None
+    assert "true_workflow" in fieldnames
+    assert "predicted_workflow" in fieldnames
 
 
 def test_include_unknown_class_makes_unknown_trainable(tmp_path):
@@ -162,6 +176,19 @@ def test_validation_rejects_blank_labels(tmp_path):
     _write_manifest(manifest, blank_label=True)
 
     with pytest.raises(ValueError, match="blank human_label"):
+        trainer._load_and_validate_manifest(manifest)
+
+
+def test_validation_rejects_inconsistent_workflow_label(tmp_path):
+    manifest = tmp_path / "wrong_workflow.csv"
+    rows = _write_manifest(manifest)
+    rows[0]["workflow_label"] = "safe_abstain"
+    with manifest.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    with pytest.raises(ValueError, match="workflow_label"):
         trainer._load_and_validate_manifest(manifest)
 
 

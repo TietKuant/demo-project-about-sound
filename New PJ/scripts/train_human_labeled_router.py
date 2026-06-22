@@ -41,6 +41,14 @@ DEFAULT_LABELS = [
     "environment_only",
 ]
 UNKNOWN_LABEL = "unknown_mixed"
+WORKFLOW_BY_LABEL = {
+    "speech_clean": "no_process",
+    "speech_noisy_general": "speech_cleanup",
+    "speech_target_noise": "speech_cleanup",
+    "music_with_vocals": "music_separation_package",
+    "environment_only": "no_process",
+    "unknown_mixed": "safe_abstain",
+}
 CONFIDENCE_THRESHOLD = 0.70
 EVALUATION_THRESHOLDS = (0.50, 0.60, 0.70, 0.80, 0.90)
 REQUIRED_COLUMNS = {
@@ -100,6 +108,13 @@ def _load_and_validate_manifest(manifest_path: str | Path) -> list[dict[str, str
         if human_label not in {*DEFAULT_LABELS, UNKNOWN_LABEL}:
             raise ValueError(
                 f"Row {row_number} has unsupported human_label: {human_label}"
+            )
+        expected_workflow = WORKFLOW_BY_LABEL[human_label]
+        if workflow_label != expected_workflow:
+            raise ValueError(
+                f"Row {row_number} human_label={human_label} has "
+                f"workflow_label={workflow_label}; "
+                f"expected_workflow={expected_workflow}."
             )
         if sample_id in seen_sample_ids:
             raise ValueError(f"Duplicate sample_id: {sample_id}")
@@ -316,11 +331,13 @@ def _prediction_rows(
             "path": row["path"],
             "filename": row["filename"],
             "predicted_label": labels[predicted_index],
+            "predicted_workflow": WORKFLOW_BY_LABEL[labels[predicted_index]],
             "confidence": f"{confidence:.10f}",
             "accepted": str(confidence >= CONFIDENCE_THRESHOLD).lower(),
         }
         if include_truth:
             output_row["true_label"] = row["human_label"]
+            output_row["true_workflow"] = row["workflow_label"]
         for index, label in enumerate(labels):
             output_row[f"prob_{label}"] = f"{float(row_probabilities[index]):.10f}"
         output_rows.append(output_row)
@@ -330,9 +347,11 @@ def _prediction_rows(
 def _confusion_csv_rows(
     matrix: dict[str, dict[str, int]],
     labels: Sequence[str],
+    *,
+    row_field: str = "true_label",
 ) -> list[dict[str, Any]]:
     return [
-        {"true_label": label, **matrix[label]}
+        {row_field: label, **matrix[label]}
         for label in labels
     ]
 
@@ -355,6 +374,9 @@ def _safe_ratio(numerator: int, denominator: int) -> float:
 
 def _threshold_metrics(
     prediction_rows: Sequence[dict[str, str]],
+    *,
+    true_field: str = "true_label",
+    predicted_field: str = "predicted_label",
 ) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     total = len(prediction_rows)
@@ -370,11 +392,11 @@ def _threshold_metrics(
             if float(row["confidence"]) < threshold
         ]
         accepted_correct = sum(
-            row["true_label"] == row["predicted_label"]
+            row[true_field] == row[predicted_field]
             for row in accepted_rows
         )
         rejected_correct = sum(
-            row["true_label"] == row["predicted_label"]
+            row[true_field] == row[predicted_field]
             for row in rejected_rows
         )
         rows.append(
@@ -459,6 +481,27 @@ def train_human_labeled_router(
         predictions=predictions,
         index_to_label={index: label for index, label in enumerate(labels)},
     )
+    workflow_labels = list(
+        dict.fromkeys(WORKFLOW_BY_LABEL[label] for label in labels)
+    )
+    workflow_to_index = {
+        workflow: index for index, workflow in enumerate(workflow_labels)
+    }
+    workflow_truth = [
+        workflow_to_index[row["true_workflow"]]
+        for row in test_prediction_rows
+    ]
+    workflow_predictions = [
+        workflow_to_index[row["predicted_workflow"]]
+        for row in test_prediction_rows
+    ]
+    workflow_report = _classification_report(
+        truth=workflow_truth,
+        predictions=workflow_predictions,
+        index_to_label={
+            index: workflow for index, workflow in enumerate(workflow_labels)
+        },
+    )
     hard_prediction_rows = _prediction_rows(
         hard_feature_rows,
         fit["hard_unknown_probabilities"],
@@ -507,6 +550,8 @@ def train_human_labeled_router(
         "filename",
         "true_label",
         "predicted_label",
+        "true_workflow",
+        "predicted_workflow",
         "confidence",
         "accepted",
         *[f"prob_{label}" for label in labels],
@@ -540,7 +585,36 @@ def train_human_labeled_router(
         prediction_fields,
         accepted_error_rows,
     )
+    all_workflow_error_rows = sorted(
+        (
+            row
+            for row in test_prediction_rows
+            if row["true_workflow"] != row["predicted_workflow"]
+        ),
+        key=lambda row: float(row["confidence"]),
+        reverse=True,
+    )
+    accepted_workflow_error_rows = [
+        row
+        for row in all_workflow_error_rows
+        if float(row["confidence"]) >= CONFIDENCE_THRESHOLD
+    ]
+    _write_csv(
+        output / "all_workflow_error_rows.csv",
+        prediction_fields,
+        all_workflow_error_rows,
+    )
+    _write_csv(
+        output / "accepted_workflow_error_rows.csv",
+        prediction_fields,
+        accepted_workflow_error_rows,
+    )
     threshold_metric_rows = _threshold_metrics(test_prediction_rows)
+    workflow_threshold_metric_rows = _threshold_metrics(
+        test_prediction_rows,
+        true_field="true_workflow",
+        predicted_field="predicted_workflow",
+    )
     threshold_fields = [
         "threshold",
         "accepted",
@@ -557,11 +631,26 @@ def train_human_labeled_router(
         threshold_fields,
         threshold_metric_rows,
     )
+    _write_csv(
+        output / "workflow_threshold_metrics.csv",
+        threshold_fields,
+        workflow_threshold_metric_rows,
+    )
     confusion_matrix = report["confusion_matrix"]
     _write_csv(
         output / "confusion_matrix.csv",
         ["true_label", *labels],
         _confusion_csv_rows(confusion_matrix, labels),
+    )
+    workflow_confusion_matrix = workflow_report["confusion_matrix"]
+    _write_csv(
+        output / "workflow_confusion_matrix.csv",
+        ["true_workflow", *workflow_labels],
+        _confusion_csv_rows(
+            workflow_confusion_matrix,
+            workflow_labels,
+            row_field="true_workflow",
+        ),
     )
     if hard_feature_rows:
         hard_fields = [
@@ -569,6 +658,7 @@ def train_human_labeled_router(
             "path",
             "filename",
             "predicted_label",
+            "predicted_workflow",
             "confidence",
             "accepted",
             *[f"prob_{label}" for label in labels],
@@ -595,6 +685,11 @@ def train_human_labeled_router(
         for row in threshold_metric_rows
         if float(row["threshold"]) == CONFIDENCE_THRESHOLD
     )
+    workflow_threshold_row = next(
+        row
+        for row in workflow_threshold_metric_rows
+        if float(row["threshold"]) == CONFIDENCE_THRESHOLD
+    )
     metrics = {
         "total_rows": len(manifest_rows),
         "train_rows": len(train_rows),
@@ -607,6 +702,12 @@ def train_human_labeled_router(
         "macro_f1": report["macro_f1"],
         "per_class": report["per_class"],
         "confusion_matrix": confusion_matrix,
+        "workflow_accuracy": workflow_report["accuracy"],
+        "workflow_macro_precision": workflow_report["macro_precision"],
+        "workflow_macro_recall": workflow_report["macro_recall"],
+        "workflow_macro_f1": workflow_report["macro_f1"],
+        "workflow_per_class": workflow_report["per_class"],
+        "workflow_confusion_matrix": workflow_confusion_matrix,
         "counts_by_label": dict(
             sorted(Counter(row["human_label"] for row in manifest_rows).items())
         ),
@@ -617,6 +718,12 @@ def train_human_labeled_router(
             threshold_row["accepted_accuracy"]
         ),
         "accepted_errors_at_threshold": len(accepted_error_rows),
+        "workflow_accepted_accuracy_at_threshold": float(
+            workflow_threshold_row["accepted_accuracy"]
+        ),
+        "workflow_accepted_errors_at_threshold": len(
+            accepted_workflow_error_rows
+        ),
         "hard_unknown_accepted_at_threshold": len(
             hard_unknown_accepted_rows
         ),
@@ -645,6 +752,12 @@ def train_human_labeled_router(
         f"{metrics['accepted_accuracy_at_threshold']:.4f}; "
         f"accepted errors: {len(accepted_error_rows)}; "
         f"hard unknown accepted: {len(hard_unknown_accepted_rows)}"
+    )
+    print(
+        f"Workflow accuracy: {workflow_report['accuracy']:.4f}; "
+        f"workflow accepted accuracy at {CONFIDENCE_THRESHOLD:.2f}: "
+        f"{metrics['workflow_accepted_accuracy_at_threshold']:.4f}; "
+        f"workflow accepted errors: {len(accepted_workflow_error_rows)}"
     )
     worst = _worst_confusions(confusion_matrix)
     if worst:
