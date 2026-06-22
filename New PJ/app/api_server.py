@@ -40,6 +40,7 @@ from src.planner.processing_planner import (
     ProcessingPlan,
     WORKFLOW_ENVIRONMENT_EVENT_ANALYSIS,
     WORKFLOW_MUSIC_SEPARATION_PACKAGE,
+    WORKFLOW_SAFE_ABSTAIN,
     WORKFLOW_SPEECH_CLEANUP,
     WORKFLOW_SPEECH_TARGET_NOISE_CLEANUP,
     plan_processing,
@@ -68,6 +69,8 @@ DETECTION_FUSION_SPEECH_GATE_CHECKPOINT_ENV_VAR = (
 DETECTION_FUSION_SPEECH_THRESHOLD = 0.6
 DETECTION_FUSION_MUSIC_THRESHOLD = 0.7
 DETECTION_FUSION_TARGET_THRESHOLD = 0.8
+DETECTION_FUSION_ROUTE_MODE_ENV_VAR = "DETECTION_FUSION_ROUTE_MODE"
+DETECTION_FUSION_ACTIVE_WARNING = "detection_fusion_active"
 
 SUPPORTED_GOALS = {
     ANALYZE_ONLY,
@@ -145,9 +148,13 @@ def _write_metadata(file_id: str, metadata: dict[str, Any]) -> None:
     path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
 
-def _plan_payload(plan: ProcessingPlan) -> dict[str, Any]:
+def _plan_payload(
+    plan: ProcessingPlan,
+    decision_source: str = "planner",
+) -> dict[str, Any]:
     return {
         "decision": plan.action,
+        "decision_source": decision_source,
         "workflow_kind": plan.workflow_kind,
         "recommended_task": plan.recommended_task,
         "recommended_tasks": plan.recommended_tasks,
@@ -257,6 +264,83 @@ def _experimental_detection_fusion(input_path: Path) -> dict[str, Any]:
     }
 
 
+def _promoted_fusion_router(
+    fusion: dict[str, Any],
+) -> dict[str, object] | None:
+    if fusion.get("enabled") is not True or fusion.get("abstain") is True:
+        return None
+    scores = dict(fusion.get("detection_scores") or {})
+    try:
+        speech_score = float(scores["speech_present"])
+        music_score = float(scores["music_present"])
+        target_score = float(scores["target_event_present"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    fusion_label = str(fusion.get("fusion_label") or "")
+    if fusion_label == "music_with_vocals" and music_score >= 0.90:
+        predicted_label = "music_with_vocals"
+        confidence = music_score
+    elif (
+        fusion_label == "speech_target_noise"
+        and speech_score >= 0.80
+        and target_score >= 0.90
+    ):
+        predicted_label = "speech_target_noise"
+        confidence = min(speech_score, target_score)
+    elif (
+        fusion_label == "speech_present_general"
+        and speech_score >= 0.80
+        and target_score < 0.50
+        and music_score < 0.50
+    ):
+        predicted_label = "speech_noisy_general"
+        confidence = speech_score
+    else:
+        return None
+    return {
+        "router_status": "enabled",
+        "predicted_label": predicted_label,
+        "confidence": confidence,
+        "accepted": True,
+        "route_target": fusion.get("recommended_workflow"),
+        "recommended_task": None,
+        "decision_reason": DETECTION_FUSION_ACTIVE_WARNING,
+        "warnings": [DETECTION_FUSION_ACTIVE_WARNING],
+    }
+
+
+def _active_fusion_plan(
+    *,
+    goal: str,
+    primary_plan: ProcessingPlan,
+    fusion: dict[str, Any],
+    facts: Any,
+) -> tuple[ProcessingPlan, dict[str, object] | None, str]:
+    route_mode = os.environ.get(
+        DETECTION_FUSION_ROUTE_MODE_ENV_VAR, "off"
+    ).strip().lower()
+    if (
+        route_mode != "active"
+        or goal != AUTO
+        or primary_plan.action != ACTION_MANUAL_REQUIRED
+        or primary_plan.workflow_kind != WORKFLOW_SAFE_ABSTAIN
+    ):
+        return primary_plan, None, "primary_router"
+    promoted_router = _promoted_fusion_router(fusion)
+    if promoted_router is None:
+        return primary_plan, None, "primary_router"
+    promoted_plan = plan_processing(
+        goal,
+        facts,
+        _router_evidence(promoted_router),
+        _demo_capabilities(),
+    )
+    if promoted_plan.action != ACTION_RUN_TASK:
+        return primary_plan, None, "primary_router"
+    return promoted_plan, promoted_router, DETECTION_FUSION_ACTIVE_WARNING
+
+
 def _read_task_summary(run_dir: Path) -> dict[str, str]:
     summary_path = run_dir / "summary.csv"
     if not summary_path.is_file():
@@ -290,7 +374,11 @@ def _plan_from_metadata(metadata: dict[str, Any], input_path: Path) -> Processin
         str(key): str(value)
         for key, value in dict(metadata.get("features") or {}).items()
     }
-    router_result = dict(metadata.get("router") or {})
+    router_result = dict(
+        metadata.get("planning_router")
+        or metadata.get("router")
+        or {}
+    )
     return plan_processing(
         str(metadata.get("goal") or AUTO),
         _processing_facts(input_path, feature_row),
@@ -492,11 +580,17 @@ async def analyze(file: UploadFile = File(...), goal: str = Form(...)) -> dict[s
     router_result = _optional_router_result(input_path)
     experimental_detection_fusion = _experimental_detection_fusion(input_path)
     facts = _processing_facts(input_path, feature_row)
-    plan = plan_processing(
+    primary_plan = plan_processing(
         goal,
         facts,
         _router_evidence(router_result),
         _demo_capabilities(),
+    )
+    plan, planning_router, decision_source = _active_fusion_plan(
+        goal=goal,
+        primary_plan=primary_plan,
+        fusion=experimental_detection_fusion,
+        facts=facts,
     )
     metadata = {
         "file_id": file_id,
@@ -506,6 +600,8 @@ async def analyze(file: UploadFile = File(...), goal: str = Form(...)) -> dict[s
         "goal": goal,
         "features": feature_row,
         "router": router_result,
+        "planning_router": planning_router or {},
+        "decision_source": decision_source,
         "primary_output_path": "",
         "outputs_by_label": {},
     }
@@ -513,7 +609,7 @@ async def analyze(file: UploadFile = File(...), goal: str = Form(...)) -> dict[s
     return {
         "file_id": file_id,
         "filename": filename,
-        "controller": _plan_payload(plan),
+        "controller": _plan_payload(plan, decision_source),
         "router": _router_payload(router_result),
         "features": _feature_payload(feature_row),
         "experimental_detection_fusion": experimental_detection_fusion,
@@ -580,6 +676,7 @@ def run_plan(request: RunPlanRequest) -> dict[str, Any]:
     metadata = _read_metadata(request.file_id)
     input_path = _registered_path(metadata, "input")
     plan = _plan_from_metadata(metadata, input_path)
+    decision_source = str(metadata.get("decision_source") or "planner")
 
     if plan.workflow_kind == WORKFLOW_ENVIRONMENT_EVENT_ANALYSIS:
         run_dir, artifacts = _write_environment_event_report(
@@ -593,7 +690,7 @@ def run_plan(request: RunPlanRequest) -> dict[str, Any]:
         _write_metadata(request.file_id, metadata)
         return {
             "status": "analysis_complete",
-            "controller": _plan_payload(plan),
+            "controller": _plan_payload(plan, decision_source),
             "run_dir": str(run_dir.resolve()),
             "outputs": artifacts,
             "primary_output_path": artifacts[0]["path"],
@@ -603,21 +700,21 @@ def run_plan(request: RunPlanRequest) -> dict[str, Any]:
     if plan.action == ACTION_NO_PROCESS:
         return {
             "status": "no_process",
-            "controller": _plan_payload(plan),
+            "controller": _plan_payload(plan, decision_source),
             "run_dir": "",
             "outputs": [],
         }
     if plan.action in {ACTION_MANUAL_REQUIRED, ACTION_ANALYZE_ONLY} or plan.blocked_reasons:
         return {
             "status": "blocked",
-            "controller": _plan_payload(plan),
+            "controller": _plan_payload(plan, decision_source),
             "run_dir": "",
             "outputs": [],
         }
     if plan.action != ACTION_RUN_TASK or not plan.recommended_task:
         return {
             "status": "blocked",
-            "controller": _plan_payload(plan),
+            "controller": _plan_payload(plan, decision_source),
             "run_dir": "",
             "outputs": [],
         }
@@ -632,7 +729,7 @@ def run_plan(request: RunPlanRequest) -> dict[str, Any]:
     if summary.get("status") != "success":
         return {
             "status": summary.get("status", "failed"),
-            "controller": _plan_payload(plan),
+            "controller": _plan_payload(plan, decision_source),
             "run_dir": str(run_dir.resolve()),
             "outputs": [],
             "error": summary.get("error", ""),
@@ -667,7 +764,7 @@ def run_plan(request: RunPlanRequest) -> dict[str, Any]:
     return {
         "status": "success",
         "task": task,
-        "controller": _plan_payload(plan),
+        "controller": _plan_payload(plan, decision_source),
         "run_dir": str(run_dir.resolve()),
         "outputs": artifacts,
         "primary_output_path": artifacts[0]["path"],

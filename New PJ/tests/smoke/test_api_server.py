@@ -21,6 +21,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         api_server.DETECTION_FUSION_HEAD_CHECKPOINT_ENV_VAR,
         api_server.DETECTION_FUSION_ROUTER_CHECKPOINT_ENV_VAR,
         api_server.DETECTION_FUSION_SPEECH_GATE_CHECKPOINT_ENV_VAR,
+        api_server.DETECTION_FUSION_ROUTE_MODE_ENV_VAR,
     ):
         monkeypatch.delenv(env_var, raising=False)
     return TestClient(api_server.api)
@@ -140,6 +141,195 @@ def test_api_analyze_exposes_experimental_detection_fusion(
         "enabled": True,
         **fusion_result,
     }
+
+
+def _fusion_payload(
+    fusion_label: str,
+    *,
+    speech: float,
+    music: float,
+    target: float,
+    workflow: str,
+) -> dict[str, object]:
+    return {
+        "enabled": True,
+        "fusion_label": fusion_label,
+        "recommended_workflow": workflow,
+        "detection_scores": {
+            "speech_present": speech,
+            "music_present": music,
+            "target_event_present": target,
+        },
+        "review_recommended": False,
+        "review_reasons": [],
+        "abstain": False,
+        "abstain_reason": "",
+    }
+
+
+def test_detection_fusion_route_mode_off_preserves_primary_abstain(
+    client: TestClient,
+) -> None:
+    fusion = _fusion_payload(
+        "speech_present_general",
+        speech=0.95,
+        music=0.05,
+        target=0.10,
+        workflow="speech_cleanup",
+    )
+    with patch(
+        "app.api_server._experimental_detection_fusion",
+        return_value=fusion,
+    ):
+        payload = _analyze(client, goal="auto")
+
+    assert payload["controller"]["decision"] == "manual_required"
+    assert payload["controller"]["decision_source"] == "primary_router"
+
+
+@pytest.mark.parametrize(
+    (
+        "fusion",
+        "expected_workflow",
+        "expected_task",
+    ),
+    [
+        (
+            _fusion_payload(
+                "speech_target_noise",
+                speech=0.91,
+                music=0.05,
+                target=0.95,
+                workflow="speech_target_noise_cleanup",
+            ),
+            "speech_target_noise_cleanup",
+            CLEAN_VOICE,
+        ),
+        (
+            _fusion_payload(
+                "speech_present_general",
+                speech=0.92,
+                music=0.10,
+                target=0.20,
+                workflow="speech_cleanup",
+            ),
+            "speech_cleanup",
+            CLEAN_VOICE,
+        ),
+        (
+            _fusion_payload(
+                "music_with_vocals",
+                speech=0.20,
+                music=0.96,
+                target=0.10,
+                workflow="music_separation_package",
+            ),
+            "music_separation_package",
+            EXTRACT_VOCALS,
+        ),
+    ],
+)
+def test_active_detection_fusion_promotes_strong_abstained_evidence(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fusion: dict[str, object],
+    expected_workflow: str,
+    expected_task: str,
+) -> None:
+    monkeypatch.setenv(api_server.DETECTION_FUSION_ROUTE_MODE_ENV_VAR, "active")
+    with patch(
+        "app.api_server._experimental_detection_fusion",
+        return_value=fusion,
+    ):
+        payload = _analyze(client, goal="auto")
+
+    assert payload["controller"]["decision"] == "run_task"
+    assert payload["controller"]["workflow_kind"] == expected_workflow
+    assert payload["controller"]["recommended_task"] == expected_task
+    assert payload["controller"]["decision_source"] == "detection_fusion_active"
+    assert "detection_fusion_active" in payload["controller"]["warnings"]
+    metadata = api_server._read_metadata(str(payload["file_id"]))
+    replayed_plan = api_server._plan_from_metadata(
+        metadata,
+        Path(str(metadata["input_path"])),
+    )
+    assert replayed_plan.action == "run_task"
+    assert replayed_plan.workflow_kind == expected_workflow
+    assert replayed_plan.recommended_task == expected_task
+
+
+def test_active_detection_fusion_keeps_accepted_primary_router_plan(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(api_server.DETECTION_FUSION_ROUTE_MODE_ENV_VAR, "active")
+    accepted_router = {
+        "router_status": "enabled",
+        "predicted_label": "speech_noisy_general",
+        "confidence": 0.95,
+        "accepted": True,
+        "route_target": CLEAN_VOICE,
+        "recommended_task": CLEAN_VOICE,
+        "decision_reason": "accepted",
+        "warnings": [],
+    }
+    conflicting_fusion = _fusion_payload(
+        "music_with_vocals",
+        speech=0.10,
+        music=0.99,
+        target=0.10,
+        workflow="music_separation_package",
+    )
+    with patch(
+        "app.api_server._experimental_detection_fusion",
+        return_value=conflicting_fusion,
+    ):
+        payload = _analyze(
+            client,
+            goal="auto",
+            router_result=accepted_router,
+        )
+
+    assert payload["controller"]["decision"] == "run_task"
+    assert payload["controller"]["workflow_kind"] == "speech_cleanup"
+    assert payload["controller"]["recommended_task"] == CLEAN_VOICE
+    assert payload["controller"]["decision_source"] == "primary_router"
+
+
+@pytest.mark.parametrize(
+    "fusion",
+    [
+        _fusion_payload(
+            "environment_only",
+            speech=0.10,
+            music=0.10,
+            target=0.95,
+            workflow="environment_event_analysis",
+        ),
+        _fusion_payload(
+            "speech_target_noise",
+            speech=0.79,
+            music=0.05,
+            target=0.89,
+            workflow="speech_target_noise_cleanup",
+        ),
+    ],
+)
+def test_active_detection_fusion_does_not_promote_environment_or_weak_scores(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    fusion: dict[str, object],
+) -> None:
+    monkeypatch.setenv(api_server.DETECTION_FUSION_ROUTE_MODE_ENV_VAR, "active")
+    with patch(
+        "app.api_server._experimental_detection_fusion",
+        return_value=fusion,
+    ):
+        payload = _analyze(client, goal="auto")
+
+    assert payload["controller"]["decision"] == "manual_required"
+    assert payload["controller"]["workflow_kind"] == "safe_abstain"
+    assert payload["controller"]["decision_source"] == "primary_router"
 
 
 def test_api_run_blocks_target_noise_suppression(client: TestClient) -> None:
