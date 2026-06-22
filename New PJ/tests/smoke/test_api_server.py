@@ -253,7 +253,9 @@ def test_api_run_plan_target_noise_goal_remains_blocked(client: TestClient) -> N
     assert "target_noise_suppression_manual_only" in payload["controller"]["blocked_reasons"]
 
 
-def test_api_run_plan_blocks_guarded_auto_abstention(client: TestClient) -> None:
+def test_api_run_plan_writes_guarded_environment_event_report(
+    client: TestClient,
+) -> None:
     router_result = {
         "router_status": "enabled",
         "predicted_label": "speech_target_noise",
@@ -278,7 +280,23 @@ def test_api_run_plan_blocks_guarded_auto_abstention(client: TestClient) -> None
         )
 
     run_mock.assert_not_called()
-    assert response.json()["status"] == "blocked"
+    payload = response.json()
+    assert payload["status"] == "analysis_complete"
+    assert payload["controller"]["workflow_kind"] == (
+        "environment_event_analysis"
+    )
+    assert [artifact["label"] for artifact in payload["outputs"]] == [
+        "environment_event_report_json",
+        "environment_event_report_csv",
+    ]
+    report_response = client.get(payload["outputs"][0]["download_url"])
+    assert report_response.status_code == 200
+    report = report_response.json()
+    assert report["router_predicted_label"] == "speech_target_noise"
+    assert report["speech_gate_label"] == "non_speech"
+    assert report["guard_applied"] is True
+    assert report["target_event_detected"] is True
+    assert "environment event analysis report" in report["explanation"]
     assert analyzed["router"]["guard_applied"] is True
     assert analyzed["router"]["final_workflow"] == "safe_abstain"
 

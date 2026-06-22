@@ -36,6 +36,7 @@ from src.planner.processing_planner import (
     REDUCE_TARGET_NOISE,
     REMOVE_VOCALS_GOAL,
     ProcessingPlan,
+    WORKFLOW_ENVIRONMENT_EVENT_ANALYSIS,
     WORKFLOW_MUSIC_SEPARATION_PACKAGE,
     WORKFLOW_SPEECH_CLEANUP,
     plan_processing,
@@ -212,7 +213,12 @@ def _plan_from_metadata(metadata: dict[str, Any], input_path: Path) -> Processin
     )
 
 
-def _output_artifact(file_id: str, label: str, path: Path) -> dict[str, str]:
+def _output_artifact(
+    file_id: str,
+    label: str,
+    path: Path,
+    media_type: str = "audio",
+) -> dict[str, str]:
     resolved = path.resolve()
     if not resolved.is_relative_to(RUN_ROOT.resolve()) or not resolved.is_file():
         raise HTTPException(status_code=500, detail=f"Output artifact is unavailable: {label}")
@@ -220,8 +226,71 @@ def _output_artifact(file_id: str, label: str, path: Path) -> dict[str, str]:
         "label": label,
         "path": str(resolved),
         "download_url": f"/api/files/{file_id}?kind=output&label={label}",
-        "media_type": "audio",
+        "media_type": media_type,
     }
+
+
+def _write_environment_event_report(
+    *,
+    file_id: str,
+    metadata: dict[str, Any],
+    input_path: Path,
+    plan: ProcessingPlan,
+) -> tuple[Path, list[dict[str, str]]]:
+    run_dir = (
+        RUN_ROOT
+        / file_id
+        / WORKFLOW_ENVIRONMENT_EVENT_ANALYSIS
+        / "report"
+    )
+    run_dir.mkdir(parents=True, exist_ok=True)
+    features = dict(metadata.get("features") or {})
+    router = dict(metadata.get("router") or {})
+    report = {
+        "input_filename": str(metadata.get("filename") or input_path.name),
+        "input_path": str(input_path.resolve()),
+        "duration_sec": features.get("duration_sec", ""),
+        "rms_energy": features.get("rms_energy", ""),
+        "spectral_centroid_hz": features.get("spectral_centroid_hz", ""),
+        "spectral_bandwidth_hz": features.get(
+            "spectral_bandwidth_hz", ""
+        ),
+        "router_predicted_label": router.get("predicted_label", ""),
+        "router_confidence": router.get("confidence"),
+        "speech_gate_label": router.get("speech_gate_label", ""),
+        "speech_gate_confidence": router.get("speech_gate_confidence"),
+        "guard_applied": router.get("guard_applied") is True,
+        "final_workflow": router.get("final_workflow", ""),
+        "decision_reason": router.get("decision_reason", ""),
+        "explanation": plan.explanation,
+        "target_event_detected": (
+            router.get("predicted_label") == "speech_target_noise"
+        ),
+    }
+    json_path = run_dir / "report.json"
+    csv_path = run_dir / "report.csv"
+    json_path.write_text(
+        json.dumps(report, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(report))
+        writer.writeheader()
+        writer.writerow(report)
+    return run_dir, [
+        _output_artifact(
+            file_id,
+            "environment_event_report_json",
+            json_path,
+            media_type="application/json",
+        ),
+        _output_artifact(
+            file_id,
+            "environment_event_report_csv",
+            csv_path,
+            media_type="text/csv",
+        ),
+    ]
 
 
 def _read_music_artifacts(run_dir: Path, file_id: str) -> list[dict[str, str]]:
@@ -372,6 +441,25 @@ def run_plan(request: RunPlanRequest) -> dict[str, Any]:
     input_path = _registered_path(metadata, "input")
     plan = _plan_from_metadata(metadata, input_path)
 
+    if plan.workflow_kind == WORKFLOW_ENVIRONMENT_EVENT_ANALYSIS:
+        run_dir, artifacts = _write_environment_event_report(
+            file_id=request.file_id,
+            metadata=metadata,
+            input_path=input_path,
+            plan=plan,
+        )
+        _store_artifacts(metadata, artifacts, run_dir)
+        metadata["last_task"] = WORKFLOW_ENVIRONMENT_EVENT_ANALYSIS
+        _write_metadata(request.file_id, metadata)
+        return {
+            "status": "analysis_complete",
+            "controller": _plan_payload(plan),
+            "run_dir": str(run_dir.resolve()),
+            "outputs": artifacts,
+            "primary_output_path": artifacts[0]["path"],
+            "download_url": artifacts[0]["download_url"],
+            "error": "",
+        }
     if plan.action == ACTION_NO_PROCESS:
         return {
             "status": "no_process",

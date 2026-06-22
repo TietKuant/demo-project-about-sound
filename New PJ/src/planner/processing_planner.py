@@ -19,6 +19,7 @@ WORKFLOW_MUSIC_SEPARATION_PACKAGE = "music_separation_package"
 WORKFLOW_NO_PROCESS = "no_process"
 WORKFLOW_SAFE_ABSTAIN = "safe_abstain"
 WORKFLOW_TARGET_NOISE_GUARD = "target_noise_guard"
+WORKFLOW_ENVIRONMENT_EVENT_ANALYSIS = "environment_event_analysis"
 
 MODE_GOAL_DRIVEN = "goal_driven"
 MODE_AUTO_RECOMMENDATION = "auto_recommendation"
@@ -311,6 +312,40 @@ def _plan_auto(
 ) -> ProcessingPlan:
     warnings = _router_warnings(router)
     if router.router_status != "enabled" or not router.accepted:
+        if (
+            router.router_status == "enabled"
+            and not router.accepted
+            and router.decision_reason
+            == "speech_cleanup_blocked_by_speech_gate"
+            and router.predicted_label == "speech_target_noise"
+        ):
+            return ProcessingPlan(
+                mode=MODE_AUTO_RECOMMENDATION,
+                goal=goal,
+                action=ACTION_ANALYZE_ONLY,
+                workflow_kind=WORKFLOW_ENVIRONMENT_EVENT_ANALYSIS,
+                warnings=warnings,
+                expected_outputs=["environment_event_report"],
+                output_labels=["environment_event_report"],
+                explanation=(
+                    "A target-like environmental sound was detected, but trusted "
+                    "speech was not detected. Speech cleanup is blocked; the "
+                    "controller will produce an environment event analysis report "
+                    "instead."
+                ),
+            )
+        explanation = "Auto mode requires accepted evidence from an enabled router."
+        if (
+            router.router_status == "enabled"
+            and not router.accepted
+            and router.decision_reason
+            == "speech_cleanup_blocked_by_speech_gate"
+        ):
+            explanation = (
+                "The router proposed speech cleanup, but the speech-present safety "
+                "gate did not pass. Automatic speech cleanup was blocked to avoid "
+                "processing target or environment sound without trusted speech."
+            )
         return ProcessingPlan(
             mode=MODE_AUTO_RECOMMENDATION,
             goal=goal,
@@ -318,7 +353,7 @@ def _plan_auto(
             workflow_kind=WORKFLOW_SAFE_ABSTAIN,
             warnings=warnings,
             blocked_reasons=[BLOCK_ROUTER_NOT_TRUSTED],
-            explanation="Auto mode requires accepted evidence from an enabled router.",
+            explanation=explanation,
         )
 
     label = router.predicted_label

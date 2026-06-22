@@ -94,6 +94,14 @@ function MediaPlayer({ src, filename }) {
   return isVideo ? <video controls src={src} /> : <audio controls src={src} />;
 }
 
+function isPlayableMedia(output) {
+  const mediaType = output?.media_type?.toLowerCase() || "";
+  if (mediaType.startsWith("audio") || mediaType.startsWith("video")) {
+    return true;
+  }
+  return /\.(wav|mp3|mp4)$/i.test(output?.path || output?.filename || "");
+}
+
 function SelectedPath({ controller }) {
   const gateBlocked = controller.decision === "manual_required";
   const runsEngine = controller.decision === "run_task";
@@ -502,7 +510,16 @@ export default function App() {
                             enhanced_speech: "Enhanced speech",
                           }[output.label] || output.label.replaceAll("_", " ")}
                         </span>
-                        <MediaPlayer src={output.download_url} filename={output.path} />
+                        {isPlayableMedia(output) ? (
+                          <MediaPlayer src={output.download_url} filename={output.path} />
+                        ) : (
+                          <div>
+                            <strong>{output.label.replaceAll("_", " ")}</strong>
+                            <p className="muted">
+                              {output.media_type || "File"} · {output.path?.split("/").pop() || output.filename || "report"}
+                            </p>
+                          </div>
+                        )}
                         <a className="download-button" href={output.download_url} download>
                           Download {output.label.replaceAll("_", " ")}
                         </a>

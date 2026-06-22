@@ -20,6 +20,7 @@ from src.planner.processing_planner import (
     WARNING_ROUTER_GOAL_MISMATCH,
     WARNING_SILENCE_OR_NEAR_SILENCE,
     WARNING_TARGET_SUPPRESSOR_EXPERIMENTAL,
+    WORKFLOW_ENVIRONMENT_EVENT_ANALYSIS,
     WORKFLOW_MUSIC_SEPARATION_PACKAGE,
     WORKFLOW_SAFE_ABSTAIN,
     WORKFLOW_SPEECH_CLEANUP,
@@ -146,6 +147,29 @@ def test_auto_low_confidence_router_uses_safe_abstain_workflow() -> None:
     assert plan.workflow_kind == WORKFLOW_SAFE_ABSTAIN
     assert plan.blocked_reasons == [BLOCK_ROUTER_NOT_TRUSTED]
     assert plan.recommended_tasks == []
+
+
+def test_auto_guarded_target_sound_creates_environment_analysis_plan() -> None:
+    plan = plan_processing(
+        AUTO,
+        ProcessingFacts(input_type="audio"),
+        RouterEvidence(
+            router_status="enabled",
+            predicted_label="speech_target_noise",
+            confidence=0.82,
+            accepted=False,
+            decision_reason="speech_cleanup_blocked_by_speech_gate",
+            warnings=["guarded_router_safe_abstain"],
+        ),
+    )
+
+    assert plan.action == ACTION_ANALYZE_ONLY
+    assert plan.workflow_kind == WORKFLOW_ENVIRONMENT_EVENT_ANALYSIS
+    assert plan.recommended_task is None
+    assert plan.expected_outputs == ["environment_event_report"]
+    assert "guarded_router_safe_abstain" in plan.warnings
+    assert "target-like environmental sound" in plan.explanation
+    assert "Speech cleanup is blocked" in plan.explanation
 
 
 def test_auto_target_noise_uses_safe_clean_voice_fallback() -> None:
