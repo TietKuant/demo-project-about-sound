@@ -37,6 +37,20 @@ async function readJson(response) {
   return payload;
 }
 
+function displayValue(value) {
+  return value == null || value === "" ? "n/a" : String(value);
+}
+
+function displayBoolean(value) {
+  return typeof value === "boolean" ? (value ? "yes" : "no") : "n/a";
+}
+
+function displayConfidence(value) {
+  return value == null || value === "" || Number.isNaN(Number(value))
+    ? "n/a"
+    : Number(value).toFixed(3);
+}
+
 function SafetyNotes({ controller }) {
   const items = [
     ...(controller?.warnings || []),
@@ -337,7 +351,9 @@ export default function App() {
                   <span>Router</span>
                   <strong>
                     {analysis.router.predicted_label || "No trusted label"}
-                    {analysis.router.confidence != null ? ` · ${Number(analysis.router.confidence).toFixed(2)}` : ""}
+                    {analysis.router.confidence != null ? ` · ${displayConfidence(analysis.router.confidence)}` : ""}
+                    {analysis.router.guard_applied ? " · guarded block" : ""}
+                    {analysis.router.final_workflow ? ` · ${analysis.router.final_workflow}` : ""}
                   </strong>
                 </div>
               </div>
@@ -412,9 +428,20 @@ export default function App() {
                   <dl>
                     <dt>Status</dt><dd>{analysis.router.status}</dd>
                     <dt>Label</dt><dd>{analysis.router.predicted_label || "n/a"}</dd>
-                    <dt>Confidence</dt><dd>{analysis.router.confidence ?? "n/a"}</dd>
-                    <dt>Accepted</dt><dd>{analysis.router.accepted ? "yes" : "no"}</dd>
+                    <dt>Confidence</dt><dd>{displayConfidence(analysis.router.confidence)}</dd>
+                    <dt>Accepted</dt><dd>{displayBoolean(analysis.router.accepted)}</dd>
+                    <dt>Decision reason</dt><dd>{displayValue(analysis.router.decision_reason)}</dd>
+                    <dt>Guard applied</dt><dd>{displayBoolean(analysis.router.guard_applied)}</dd>
+                    <dt>Final workflow</dt><dd>{displayValue(analysis.router.final_workflow)}</dd>
+                    <dt>Final accepted</dt><dd>{displayBoolean(analysis.router.final_accepted)}</dd>
+                    <dt>Speech gate label</dt><dd>{displayValue(analysis.router.speech_gate_label)}</dd>
+                    <dt>Speech gate confidence</dt><dd>{displayConfidence(analysis.router.speech_gate_confidence)}</dd>
                   </dl>
+                  {analysis.router.guard_applied && (
+                    <p className="muted">
+                      Speech cleanup was blocked by the speech-present safety gate.
+                    </p>
+                  )}
                 </div>
                 <div>
                   <h3>Signal features</h3>
