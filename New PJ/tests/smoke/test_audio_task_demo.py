@@ -10,13 +10,16 @@ import pytest
 
 from app.audio_task_demo import (
     AUTO_INTENT,
+    GUARDED_ROUTER_ENABLED_ENV_VAR,
     MUSIC_INTENT,
     ROUTER_CHECKPOINT_ENV_VAR,
+    SPEECH_GATE_CHECKPOINT_ENV_VAR,
     SPEECH_INTENT,
     TARGET_NOISE_INTENT,
     UNKNOWN_INTENT,
     analyze_demo_input,
     analyze_demo_input_for_ui,
+    _optional_router_result,
     run_demo_task,
 )
 from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, REMOVE_VOCALS, TARGET_NOISE_SUPPRESSION
@@ -25,6 +28,8 @@ from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, REMOVE_VOCALS,
 @pytest.fixture(autouse=True)
 def _disable_router_checkpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(ROUTER_CHECKPOINT_ENV_VAR, raising=False)
+    monkeypatch.delenv(GUARDED_ROUTER_ENABLED_ENV_VAR, raising=False)
+    monkeypatch.delenv(SPEECH_GATE_CHECKPOINT_ENV_VAR, raising=False)
 
 
 def _write_summary(run_dir: Path, *, task: str, primary_output_path: Path | None) -> None:
@@ -280,6 +285,62 @@ def test_auto_accepted_noisy_speech_recommends_clean_voice_through_planner(tmp_p
     assert recommended_task == CLEAN_VOICE
     assert "Action:** `run_task`" in markdown
     assert "Algorithm:** `DeepFilterNet`" in markdown
+
+
+def test_guarded_router_mode_maps_safe_abstain_to_unaccepted_evidence(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    input_path = tmp_path / "speech.wav"
+    router_checkpoint = tmp_path / "router.pt"
+    gate_checkpoint = tmp_path / "gate.pt"
+    input_path.write_bytes(b"audio")
+    router_checkpoint.write_bytes(b"router")
+    gate_checkpoint.write_bytes(b"gate")
+    monkeypatch.setenv(GUARDED_ROUTER_ENABLED_ENV_VAR, "1")
+    monkeypatch.setenv(ROUTER_CHECKPOINT_ENV_VAR, str(router_checkpoint))
+    monkeypatch.setenv(SPEECH_GATE_CHECKPOINT_ENV_VAR, str(gate_checkpoint))
+    guarded_result = {
+        "router_label": "speech_target_noise",
+        "router_workflow": "speech_cleanup",
+        "router_confidence": 0.96,
+        "speech_gate_label": "non_speech",
+        "speech_gate_confidence": 0.94,
+        "speech_gate_accepted": True,
+        "guard_applied": True,
+        "final_workflow": "safe_abstain",
+        "final_accepted": False,
+        "reason": "speech_cleanup_blocked_by_speech_gate",
+        "router_probabilities": {"speech_target_noise": 0.96},
+        "speech_gate_probabilities": {"non_speech": 0.94},
+    }
+
+    with patch(
+        "scripts.run_guarded_router.run_guarded_router",
+        return_value=guarded_result,
+    ):
+        router_result = _optional_router_result(input_path)
+
+    assert router_result["router_status"] == "enabled"
+    assert router_result["accepted"] is False
+    assert router_result["guard_applied"] is True
+    assert router_result["final_workflow"] == "safe_abstain"
+
+
+def test_guarded_router_missing_checkpoint_is_safe_unavailable(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    input_path = tmp_path / "speech.wav"
+    input_path.write_bytes(b"audio")
+    monkeypatch.setenv(GUARDED_ROUTER_ENABLED_ENV_VAR, "1")
+
+    router_result = _optional_router_result(input_path)
+
+    assert router_result["router_status"] == "unavailable"
+    assert router_result["accepted"] is False
+    assert router_result["final_workflow"] == "safe_abstain"
+    assert "checkpoint" in str(router_result["error"]).lower()
 
 
 def test_auto_accepted_target_noise_uses_clean_voice_fallback(tmp_path: Path) -> None:

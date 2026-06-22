@@ -147,11 +147,22 @@ def _plan_payload(plan: ProcessingPlan) -> dict[str, Any]:
 
 def _router_payload(router_result: dict[str, object]) -> dict[str, Any]:
     confidence = router_result.get("confidence")
+    speech_gate_confidence = router_result.get("speech_gate_confidence")
     return {
         "status": str(router_result.get("router_status") or "disabled"),
         "predicted_label": str(router_result.get("predicted_label") or ""),
         "confidence": float(confidence) if isinstance(confidence, (int, float)) else None,
         "accepted": router_result.get("accepted") is True,
+        "decision_reason": str(router_result.get("decision_reason") or ""),
+        "guard_applied": router_result.get("guard_applied") is True,
+        "final_workflow": str(router_result.get("final_workflow") or ""),
+        "final_accepted": router_result.get("final_accepted") is True,
+        "speech_gate_label": str(router_result.get("speech_gate_label") or ""),
+        "speech_gate_confidence": (
+            float(speech_gate_confidence)
+            if isinstance(speech_gate_confidence, (int, float))
+            else None
+        ),
     }
 
 

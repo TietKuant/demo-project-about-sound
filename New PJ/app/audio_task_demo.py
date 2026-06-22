@@ -55,7 +55,12 @@ UNKNOWN_INTENT = "Unknown / not sure"
 CONTENT_INTENTS = [AUTO_INTENT, SPEECH_INTENT, MUSIC_INTENT, TARGET_NOISE_INTENT, UNKNOWN_INTENT]
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 ROUTER_CHECKPOINT_ENV_VAR = "AUDIO_ROUTER_CHECKPOINT"
+GUARDED_ROUTER_ENABLED_ENV_VAR = "AUDIO_GUARDED_ROUTER_ENABLED"
+SPEECH_GATE_CHECKPOINT_ENV_VAR = "AUDIO_SPEECH_GATE_CHECKPOINT"
+ROUTER_THRESHOLD_ENV_VAR = "AUDIO_ROUTER_THRESHOLD"
+SPEECH_GATE_THRESHOLD_ENV_VAR = "AUDIO_SPEECH_GATE_THRESHOLD"
 ROUTER_CONFIDENCE_THRESHOLD = 0.90
+GUARDED_ROUTER_DEFAULT_THRESHOLD = 0.70
 DEMO_CSS = """
 .gradio-container {
   max-width: 1080px !important;
@@ -308,6 +313,138 @@ def _controller_decision_markdown(plan: ProcessingPlan) -> list[str]:
 
 
 def _optional_router_result(input_path: Path) -> dict[str, object]:
+    guarded_enabled = os.environ.get(
+        GUARDED_ROUTER_ENABLED_ENV_VAR, ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if guarded_enabled:
+        router_checkpoint_value = os.environ.get(
+            ROUTER_CHECKPOINT_ENV_VAR, ""
+        ).strip()
+        speech_gate_checkpoint_value = os.environ.get(
+            SPEECH_GATE_CHECKPOINT_ENV_VAR, ""
+        ).strip()
+        router_checkpoint = (
+            Path(router_checkpoint_value).expanduser()
+            if router_checkpoint_value
+            else None
+        )
+        speech_gate_checkpoint = (
+            Path(speech_gate_checkpoint_value).expanduser()
+            if speech_gate_checkpoint_value
+            else None
+        )
+        missing = []
+        if router_checkpoint is None or not router_checkpoint.is_file():
+            missing.append(ROUTER_CHECKPOINT_ENV_VAR)
+        if speech_gate_checkpoint is None or not speech_gate_checkpoint.is_file():
+            missing.append(SPEECH_GATE_CHECKPOINT_ENV_VAR)
+        if missing:
+            reason = "guarded_router_checkpoint_missing"
+            return {
+                "router_status": "unavailable",
+                "predicted_label": "",
+                "confidence": None,
+                "accepted": False,
+                "confidence_threshold": GUARDED_ROUTER_DEFAULT_THRESHOLD,
+                "route_target": "manual_required",
+                "engine_target": "none",
+                "recommended_task": None,
+                "decision_reason": reason,
+                "warnings": [reason],
+                "probabilities": {},
+                "guard_applied": True,
+                "final_workflow": "safe_abstain",
+                "final_accepted": False,
+                "error": "Missing guarded router checkpoint setting(s): "
+                + ", ".join(missing),
+            }
+
+        def _threshold(env_var: str) -> float:
+            value = os.environ.get(env_var, "").strip()
+            if not value:
+                return GUARDED_ROUTER_DEFAULT_THRESHOLD
+            try:
+                return float(value)
+            except ValueError:
+                return GUARDED_ROUTER_DEFAULT_THRESHOLD
+
+        router_threshold = _threshold(ROUTER_THRESHOLD_ENV_VAR)
+        speech_threshold = _threshold(SPEECH_GATE_THRESHOLD_ENV_VAR)
+        try:
+            from scripts.run_guarded_router import run_guarded_router
+
+            guarded = run_guarded_router(
+                input_path=input_path,
+                router_checkpoint=router_checkpoint,
+                speech_gate_checkpoint=speech_gate_checkpoint,
+                router_threshold=router_threshold,
+                speech_threshold=speech_threshold,
+            )
+            final_workflow = str(guarded.get("final_workflow") or "")
+            route_target = {
+                "speech_cleanup": CLEAN_VOICE,
+                "no_process": "no_process",
+                "music_separation_package": "manual_required",
+                "safe_abstain": "manual_required",
+            }.get(final_workflow, "manual_required")
+            recommended_task = {
+                "speech_cleanup": CLEAN_VOICE,
+                "music_separation_package": EXTRACT_VOCALS,
+            }.get(final_workflow)
+            engine_target = {
+                "speech_cleanup": "deepfilternet",
+                "music_separation_package": "demucs",
+            }.get(final_workflow, "none")
+            return {
+                "router_status": "enabled",
+                "predicted_label": guarded.get("router_label", ""),
+                "confidence": guarded.get("router_confidence"),
+                "accepted": guarded.get("final_accepted") is True,
+                "confidence_threshold": router_threshold,
+                "route_target": route_target,
+                "engine_target": engine_target,
+                "recommended_task": recommended_task,
+                "decision_reason": guarded.get("reason"),
+                "warnings": (
+                    ["guarded_router_safe_abstain"]
+                    if guarded.get("guard_applied") is True
+                    else []
+                ),
+                "probabilities": guarded.get("router_probabilities", {}),
+                "router_workflow": guarded.get("router_workflow"),
+                "speech_gate_label": guarded.get("speech_gate_label"),
+                "speech_gate_confidence": guarded.get("speech_gate_confidence"),
+                "speech_gate_accepted": guarded.get("speech_gate_accepted"),
+                "guard_applied": guarded.get("guard_applied"),
+                "final_workflow": final_workflow,
+                "final_accepted": guarded.get("final_accepted"),
+                "router_probabilities": guarded.get(
+                    "router_probabilities", {}
+                ),
+                "speech_gate_probabilities": guarded.get(
+                    "speech_gate_probabilities", {}
+                ),
+                "error": "",
+            }
+        except Exception as exc:
+            return {
+                "router_status": "failed",
+                "predicted_label": "",
+                "confidence": None,
+                "accepted": False,
+                "confidence_threshold": router_threshold,
+                "route_target": "manual_required",
+                "engine_target": "none",
+                "recommended_task": None,
+                "decision_reason": "guarded_router_failed",
+                "warnings": ["guarded_router_failed"],
+                "probabilities": {},
+                "guard_applied": True,
+                "final_workflow": "safe_abstain",
+                "final_accepted": False,
+                "error": str(exc),
+            }
+
     checkpoint_value = os.environ.get(ROUTER_CHECKPOINT_ENV_VAR, "").strip()
     if not checkpoint_value:
         return {

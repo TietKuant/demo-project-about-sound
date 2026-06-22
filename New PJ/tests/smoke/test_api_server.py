@@ -253,6 +253,78 @@ def test_api_run_plan_target_noise_goal_remains_blocked(client: TestClient) -> N
     assert "target_noise_suppression_manual_only" in payload["controller"]["blocked_reasons"]
 
 
+def test_api_run_plan_blocks_guarded_auto_abstention(client: TestClient) -> None:
+    router_result = {
+        "router_status": "enabled",
+        "predicted_label": "speech_target_noise",
+        "confidence": 0.96,
+        "accepted": False,
+        "route_target": "manual_required",
+        "recommended_task": None,
+        "decision_reason": "speech_cleanup_blocked_by_speech_gate",
+        "warnings": ["guarded_router_safe_abstain"],
+        "guard_applied": True,
+        "final_workflow": "safe_abstain",
+        "final_accepted": False,
+        "speech_gate_label": "non_speech",
+        "speech_gate_confidence": 0.94,
+    }
+    analyzed = _analyze(client, goal="auto", router_result=router_result)
+
+    with patch("app.api_server.run_audio_task") as run_mock:
+        response = client.post(
+            "/api/run-plan",
+            json={"file_id": analyzed["file_id"]},
+        )
+
+    run_mock.assert_not_called()
+    assert response.json()["status"] == "blocked"
+    assert analyzed["router"]["guard_applied"] is True
+    assert analyzed["router"]["final_workflow"] == "safe_abstain"
+
+
+def test_api_run_plan_allows_guarded_accepted_noisy_speech(
+    client: TestClient,
+) -> None:
+    router_result = {
+        "router_status": "enabled",
+        "predicted_label": "speech_noisy_general",
+        "confidence": 0.95,
+        "accepted": True,
+        "route_target": CLEAN_VOICE,
+        "recommended_task": CLEAN_VOICE,
+        "decision_reason": "accepted",
+        "warnings": [],
+        "guard_applied": False,
+        "final_workflow": "speech_cleanup",
+        "final_accepted": True,
+        "speech_gate_label": "speech_present",
+        "speech_gate_confidence": 0.93,
+    }
+    analyzed = _analyze(client, goal="auto", router_result=router_result)
+
+    def mock_run_audio_task(**kwargs: object) -> Path:
+        run_dir = Path(kwargs["output_root"]) / CLEAN_VOICE / "guarded-run"
+        output_path = run_dir / "speech.restored.wav"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"enhanced")
+        _write_task_summary(run_dir, CLEAN_VOICE, output_path)
+        return run_dir
+
+    with patch(
+        "app.api_server.run_audio_task",
+        side_effect=mock_run_audio_task,
+    ) as run_mock:
+        response = client.post(
+            "/api/run-plan",
+            json={"file_id": analyzed["file_id"]},
+        )
+
+    run_mock.assert_called_once()
+    assert response.json()["status"] == "success"
+    assert response.json()["task"] == CLEAN_VOICE
+
+
 def _write_task_summary(run_dir: Path, task: str, output_path: Path) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     with (run_dir / "summary.csv").open("w", newline="", encoding="utf-8") as csv_file:
