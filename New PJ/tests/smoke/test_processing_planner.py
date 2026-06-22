@@ -19,11 +19,13 @@ from src.planner.processing_planner import (
     WARNING_INPUT_TOO_SHORT,
     WARNING_ROUTER_GOAL_MISMATCH,
     WARNING_SILENCE_OR_NEAR_SILENCE,
+    WARNING_TARGET_NOISE_SUPPRESSION_FALLBACK,
     WARNING_TARGET_SUPPRESSOR_EXPERIMENTAL,
     WORKFLOW_ENVIRONMENT_EVENT_ANALYSIS,
     WORKFLOW_MUSIC_SEPARATION_PACKAGE,
     WORKFLOW_SAFE_ABSTAIN,
     WORKFLOW_SPEECH_CLEANUP,
+    WORKFLOW_SPEECH_TARGET_NOISE_CLEANUP,
     WORKFLOW_TARGET_NOISE_GUARD,
     ProcessingCapabilities,
     ProcessingFacts,
@@ -185,11 +187,17 @@ def test_auto_target_noise_uses_safe_clean_voice_fallback() -> None:
 
     assert plan.action == ACTION_RUN_TASK
     assert plan.recommended_task == CLEAN_VOICE
-    assert plan.workflow_kind == WORKFLOW_SPEECH_CLEANUP
+    assert plan.workflow_kind == WORKFLOW_SPEECH_TARGET_NOISE_CLEANUP
     assert plan.recommended_tasks == [CLEAN_VOICE]
-    assert plan.algorithm == "DeepFilterNet"
-    assert WARNING_TARGET_SUPPRESSOR_EXPERIMENTAL in plan.warnings
+    assert plan.algorithm == "DeepFilterNet fallback"
+    assert plan.expected_outputs == [
+        "enhanced_speech",
+        "target_noise_report",
+    ]
+    assert WARNING_TARGET_NOISE_SUPPRESSION_FALLBACK in plan.warnings
     assert plan.blocked_reasons == []
+    assert "trusted speech" in plan.explanation
+    assert "target-noise report" in plan.explanation
 
 
 def test_auto_clean_speech_does_not_process() -> None:
@@ -282,7 +290,8 @@ def test_auto_target_noise_without_clean_voice_requires_manual_selection() -> No
     assert plan.action == ACTION_MANUAL_REQUIRED
     assert plan.recommended_task is None
     assert plan.blocked_reasons == [BLOCK_ENGINE_UNAVAILABLE]
-    assert WARNING_TARGET_SUPPRESSOR_EXPERIMENTAL in plan.warnings
+    assert plan.workflow_kind == WORKFLOW_SPEECH_TARGET_NOISE_CLEANUP
+    assert WARNING_TARGET_NOISE_SUPPRESSION_FALLBACK in plan.warnings
 
 
 def test_invalid_media_is_a_hard_block() -> None:

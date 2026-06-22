@@ -368,8 +368,8 @@ def test_auto_accepted_target_noise_uses_clean_voice_fallback(tmp_path: Path) ->
     assert recommended_task == CLEAN_VOICE
     assert "Decision:** **RUN TASK**" in markdown
     assert "Recommended next step:** `clean_voice`" in markdown
-    assert "Algorithm:** `DeepFilterNet`" in markdown
-    assert "target_suppressor_experimental" in markdown
+    assert "Algorithm:** `DeepFilterNet fallback`" in markdown
+    assert "target_noise_suppression_fallback" in markdown
     assert "Recommended task:** `target_noise_suppression`" not in markdown
 
 

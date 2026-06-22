@@ -20,6 +20,7 @@ WORKFLOW_NO_PROCESS = "no_process"
 WORKFLOW_SAFE_ABSTAIN = "safe_abstain"
 WORKFLOW_TARGET_NOISE_GUARD = "target_noise_guard"
 WORKFLOW_ENVIRONMENT_EVENT_ANALYSIS = "environment_event_analysis"
+WORKFLOW_SPEECH_TARGET_NOISE_CLEANUP = "speech_target_noise_cleanup"
 
 MODE_GOAL_DRIVEN = "goal_driven"
 MODE_AUTO_RECOMMENDATION = "auto_recommendation"
@@ -35,6 +36,7 @@ WARNING_SILENCE_OR_NEAR_SILENCE = "silence_or_near_silence"
 WARNING_INPUT_TOO_SHORT = "input_too_short"
 WARNING_MANUAL_MUSIC_TASK_SELECTION_REQUIRED = "manual_music_task_selection_required"
 WARNING_TARGET_SUPPRESSOR_EXPERIMENTAL = "target_suppressor_experimental"
+WARNING_TARGET_NOISE_SUPPRESSION_FALLBACK = "target_noise_suppression_fallback"
 
 BLOCK_INVALID_MEDIA = "invalid_media"
 BLOCK_INVALID_DURATION = "invalid_duration"
@@ -376,14 +378,33 @@ def _plan_auto(
             explanation="Environment-only input is outside automatic processing scope.",
         )
     if label == "speech_target_noise":
-        _append_unique(warnings, WARNING_TARGET_SUPPRESSOR_EXPERIMENTAL)
-        return _plan_auto_clean_voice(
+        _append_unique(warnings, WARNING_TARGET_NOISE_SUPPRESSION_FALLBACK)
+        if not capabilities.clean_voice_available:
+            return ProcessingPlan(
+                mode=MODE_AUTO_RECOMMENDATION,
+                goal=goal,
+                action=ACTION_MANUAL_REQUIRED,
+                workflow_kind=WORKFLOW_SPEECH_TARGET_NOISE_CLEANUP,
+                warnings=warnings,
+                blocked_reasons=[BLOCK_ENGINE_UNAVAILABLE],
+                explanation="The safe speech-enhancement fallback engine is unavailable.",
+            )
+        return ProcessingPlan(
+            mode=MODE_AUTO_RECOMMENDATION,
             goal=goal,
-            capabilities=capabilities,
+            action=ACTION_RUN_TASK,
+            workflow_kind=WORKFLOW_SPEECH_TARGET_NOISE_CLEANUP,
+            recommended_task=CLEAN_VOICE,
+            recommended_tasks=[CLEAN_VOICE],
+            engine_family="speech_enhancement",
+            algorithm="DeepFilterNet fallback",
+            expected_outputs=["enhanced_speech", "target_noise_report"],
+            output_labels=["enhanced_speech", "target_noise_report"],
             warnings=warnings,
             explanation=(
-                "Target-specific suppression is experimental, so accepted target-noise speech "
-                "falls back to clean_voice rather than the target suppressor."
+                "Target-like noise was detected with trusted speech; target-specific "
+                "suppression is experimental, so the controller will run safe speech "
+                "enhancement and attach a target-noise report."
             ),
         )
     if label in {"speech_noise", "speech_noisy_general"}:

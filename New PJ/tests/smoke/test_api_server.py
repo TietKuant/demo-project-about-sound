@@ -343,6 +343,66 @@ def test_api_run_plan_allows_guarded_accepted_noisy_speech(
     assert response.json()["task"] == CLEAN_VOICE
 
 
+def test_api_run_plan_target_noise_cleanup_writes_audio_and_reports(
+    client: TestClient,
+) -> None:
+    router_result = {
+        "router_status": "enabled",
+        "predicted_label": "speech_target_noise",
+        "confidence": 0.96,
+        "accepted": True,
+        "route_target": CLEAN_VOICE,
+        "recommended_task": CLEAN_VOICE,
+        "decision_reason": "accepted",
+        "warnings": [],
+        "guard_applied": False,
+        "final_workflow": "speech_cleanup",
+        "final_accepted": True,
+        "speech_gate_label": "speech_present",
+        "speech_gate_confidence": 0.94,
+    }
+    analyzed = _analyze(client, goal="auto", router_result=router_result)
+
+    def mock_run_audio_task(**kwargs: object) -> Path:
+        run_dir = Path(kwargs["output_root"]) / CLEAN_VOICE / "target-run"
+        output_path = run_dir / "speech.restored.wav"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"enhanced")
+        _write_task_summary(run_dir, CLEAN_VOICE, output_path)
+        return run_dir
+
+    with patch(
+        "app.api_server.run_audio_task",
+        side_effect=mock_run_audio_task,
+    ) as run_mock:
+        response = client.post(
+            "/api/run-plan",
+            json={"file_id": analyzed["file_id"]},
+        )
+
+    run_mock.assert_called_once()
+    assert run_mock.call_args.kwargs["task"] == CLEAN_VOICE
+    payload = response.json()
+    assert payload["status"] == "success"
+    assert payload["controller"]["workflow_kind"] == (
+        "speech_target_noise_cleanup"
+    )
+    assert [artifact["label"] for artifact in payload["outputs"]] == [
+        "enhanced_speech",
+        "target_noise_report_json",
+        "target_noise_report_csv",
+    ]
+    report_response = client.get(payload["outputs"][1]["download_url"])
+    assert report_response.status_code == 200
+    report = report_response.json()
+    assert report["workflow_kind"] == "speech_target_noise_cleanup"
+    assert report["recommended_task"] == CLEAN_VOICE
+    assert report["router_predicted_label"] == "speech_target_noise"
+    assert report["target_specific_suppressor_enabled"] is False
+    assert report["fallback_engine"] == "DeepFilterNet"
+    assert report["target_event_detected"] is True
+
+
 def _write_task_summary(run_dir: Path, task: str, output_path: Path) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     with (run_dir / "summary.csv").open("w", newline="", encoding="utf-8") as csv_file:

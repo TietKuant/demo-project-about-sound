@@ -39,6 +39,7 @@ from src.planner.processing_planner import (
     WORKFLOW_ENVIRONMENT_EVENT_ANALYSIS,
     WORKFLOW_MUSIC_SEPARATION_PACKAGE,
     WORKFLOW_SPEECH_CLEANUP,
+    WORKFLOW_SPEECH_TARGET_NOISE_CLEANUP,
     plan_processing,
 )
 from src.router.task_registry import (
@@ -293,6 +294,58 @@ def _write_environment_event_report(
     ]
 
 
+def _write_target_noise_report(
+    *,
+    file_id: str,
+    metadata: dict[str, Any],
+    input_path: Path,
+    plan: ProcessingPlan,
+    run_dir: Path,
+) -> list[dict[str, str]]:
+    router = dict(metadata.get("router") or {})
+    report = {
+        "input_filename": str(metadata.get("filename") or input_path.name),
+        "input_path": str(input_path.resolve()),
+        "workflow_kind": plan.workflow_kind,
+        "recommended_task": plan.recommended_task,
+        "router_predicted_label": router.get("predicted_label", ""),
+        "router_confidence": router.get("confidence"),
+        "speech_gate_label": router.get("speech_gate_label", ""),
+        "speech_gate_confidence": router.get("speech_gate_confidence"),
+        "guard_applied": router.get("guard_applied") is True,
+        "final_workflow": router.get("final_workflow", ""),
+        "final_accepted": router.get("final_accepted") is True,
+        "explanation": plan.explanation,
+        "target_specific_suppressor_enabled": False,
+        "fallback_engine": "DeepFilterNet",
+        "target_event_detected": True,
+    }
+    json_path = run_dir / "target_noise_report.json"
+    csv_path = run_dir / "target_noise_report.csv"
+    json_path.write_text(
+        json.dumps(report, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(report))
+        writer.writeheader()
+        writer.writerow(report)
+    return [
+        _output_artifact(
+            file_id,
+            "target_noise_report_json",
+            json_path,
+            media_type="application/json",
+        ),
+        _output_artifact(
+            file_id,
+            "target_noise_report_csv",
+            csv_path,
+            media_type="text/csv",
+        ),
+    ]
+
+
 def _read_music_artifacts(run_dir: Path, file_id: str) -> list[dict[str, str]]:
     top_summary = (run_dir / "summary.csv").resolve()
     for summary_path in sorted(run_dir.rglob("summary.csv")):
@@ -498,9 +551,22 @@ def run_plan(request: RunPlanRequest) -> dict[str, Any]:
             "error": summary.get("error", ""),
         }
 
-    if plan.workflow_kind == WORKFLOW_SPEECH_CLEANUP:
+    if plan.workflow_kind in {
+        WORKFLOW_SPEECH_CLEANUP,
+        WORKFLOW_SPEECH_TARGET_NOISE_CLEANUP,
+    }:
         primary_path = Path(str(summary.get("primary_output_path") or ""))
         artifacts = [_output_artifact(request.file_id, "enhanced_speech", primary_path)]
+        if plan.workflow_kind == WORKFLOW_SPEECH_TARGET_NOISE_CLEANUP:
+            artifacts.extend(
+                _write_target_noise_report(
+                    file_id=request.file_id,
+                    metadata=metadata,
+                    input_path=input_path,
+                    plan=plan,
+                    run_dir=run_dir,
+                )
+            )
     elif plan.workflow_kind == WORKFLOW_MUSIC_SEPARATION_PACKAGE or task in {EXTRACT_VOCALS, REMOVE_VOCALS}:
         artifacts = _read_music_artifacts(run_dir, request.file_id)
     else:
