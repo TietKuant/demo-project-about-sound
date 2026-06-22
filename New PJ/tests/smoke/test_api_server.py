@@ -394,10 +394,117 @@ def test_api_run_clean_voice_and_serve_output(client: TestClient) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "success"
+    assert payload["controller"]["workflow_kind"] == "speech_cleanup"
+    assert payload["controller"]["decision_source"] == "planner"
     assert payload["download_url"].endswith("?kind=output")
     output_response = client.get(payload["download_url"])
     assert output_response.status_code == 200
     assert output_response.content == b"restored"
+
+
+def test_api_run_preserves_active_fusion_target_noise_cleanup(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(api_server.DETECTION_FUSION_ROUTE_MODE_ENV_VAR, "active")
+    fusion = _fusion_payload(
+        "speech_target_noise",
+        speech=0.93,
+        music=0.05,
+        target=0.96,
+        workflow="speech_target_noise_cleanup",
+    )
+    with patch(
+        "app.api_server._experimental_detection_fusion",
+        return_value=fusion,
+    ):
+        analyzed = _analyze(client, goal="auto")
+
+    metadata = api_server._read_metadata(str(analyzed["file_id"]))
+    assert metadata["controller"] == analyzed["controller"]
+    assert metadata["experimental_detection_fusion"] == fusion
+
+    def mock_run_audio_task(**kwargs: object) -> Path:
+        run_dir = Path(kwargs["output_root"]) / CLEAN_VOICE / "fusion-target-run"
+        output_path = run_dir / "speech.restored.wav"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"enhanced")
+        _write_task_summary(run_dir, CLEAN_VOICE, output_path)
+        return run_dir
+
+    with patch(
+        "app.api_server.run_audio_task",
+        side_effect=mock_run_audio_task,
+    ) as run_mock:
+        response = client.post(
+            "/api/run",
+            json={"file_id": analyzed["file_id"], "task": CLEAN_VOICE},
+        )
+
+    run_mock.assert_called_once()
+    payload = response.json()
+    assert payload["status"] == "success"
+    assert payload["controller"]["decision_source"] == "detection_fusion_active"
+    assert payload["controller"]["workflow_kind"] == (
+        "speech_target_noise_cleanup"
+    )
+    assert payload["controller"]["recommended_task"] == CLEAN_VOICE
+    assert payload["controller"]["expected_outputs"] == [
+        "enhanced_speech",
+        "target_noise_report",
+    ]
+    assert "target_noise_suppression_fallback" in payload["controller"]["warnings"]
+    assert [artifact["label"] for artifact in payload["outputs"]] == [
+        "enhanced_speech",
+        "target_noise_report_json",
+        "target_noise_report_csv",
+    ]
+    assert client.get(payload["outputs"][0]["download_url"]).content == b"enhanced"
+    assert client.get(payload["outputs"][1]["download_url"]).status_code == 200
+    assert client.get(payload["outputs"][2]["download_url"]).status_code == 200
+
+
+def test_api_run_preserves_active_fusion_general_speech_cleanup(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(api_server.DETECTION_FUSION_ROUTE_MODE_ENV_VAR, "active")
+    fusion = _fusion_payload(
+        "speech_present_general",
+        speech=0.94,
+        music=0.10,
+        target=0.20,
+        workflow="speech_cleanup",
+    )
+    with patch(
+        "app.api_server._experimental_detection_fusion",
+        return_value=fusion,
+    ):
+        analyzed = _analyze(client, goal="auto")
+
+    def mock_run_audio_task(**kwargs: object) -> Path:
+        run_dir = Path(kwargs["output_root"]) / CLEAN_VOICE / "fusion-speech-run"
+        output_path = run_dir / "speech.restored.wav"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"enhanced")
+        _write_task_summary(run_dir, CLEAN_VOICE, output_path)
+        return run_dir
+
+    with patch(
+        "app.api_server.run_audio_task",
+        side_effect=mock_run_audio_task,
+    ):
+        response = client.post(
+            "/api/run",
+            json={"file_id": analyzed["file_id"], "task": CLEAN_VOICE},
+        )
+
+    payload = response.json()
+    assert payload["status"] == "success"
+    assert payload["controller"]["decision_source"] == "detection_fusion_active"
+    assert payload["controller"]["workflow_kind"] == "speech_cleanup"
+    assert payload["controller"]["recommended_task"] == CLEAN_VOICE
+    assert payload["outputs"] == []
 
 
 def test_api_run_plan_speech_cleanup_returns_labeled_output(client: TestClient) -> None:

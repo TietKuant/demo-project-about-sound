@@ -592,6 +592,7 @@ async def analyze(file: UploadFile = File(...), goal: str = Form(...)) -> dict[s
         fusion=experimental_detection_fusion,
         facts=facts,
     )
+    controller_payload = _plan_payload(plan, decision_source)
     metadata = {
         "file_id": file_id,
         "filename": filename,
@@ -602,6 +603,8 @@ async def analyze(file: UploadFile = File(...), goal: str = Form(...)) -> dict[s
         "router": router_result,
         "planning_router": planning_router or {},
         "decision_source": decision_source,
+        "controller": controller_payload,
+        "experimental_detection_fusion": experimental_detection_fusion,
         "primary_output_path": "",
         "outputs_by_label": {},
     }
@@ -609,7 +612,7 @@ async def analyze(file: UploadFile = File(...), goal: str = Form(...)) -> dict[s
     return {
         "file_id": file_id,
         "filename": filename,
-        "controller": _plan_payload(plan, decision_source),
+        "controller": controller_payload,
         "router": _router_payload(router_result),
         "features": _feature_payload(feature_row),
         "experimental_detection_fusion": experimental_detection_fusion,
@@ -624,22 +627,34 @@ def run(request: RunRequest) -> dict[str, Any]:
 
     metadata = _read_metadata(request.file_id)
     input_path = _registered_path(metadata, "input")
-    feature_row = {
-        str(key): str(value)
-        for key, value in dict(metadata.get("features") or {}).items()
-    }
-    router_result = dict(metadata.get("router") or {})
-    plan = plan_processing(
-        goal,
-        _processing_facts(input_path, feature_row),
-        _router_evidence(router_result),
-        _demo_capabilities(),
+    analyze_controller = dict(metadata.get("controller") or {})
+    preserve_active_fusion = (
+        analyze_controller.get("decision") == ACTION_RUN_TASK
+        and analyze_controller.get("decision_source")
+        == DETECTION_FUSION_ACTIVE_WARNING
+        and analyze_controller.get("recommended_task") == request.task
     )
+    if preserve_active_fusion:
+        plan = _plan_from_metadata(metadata, input_path)
+        controller_payload = analyze_controller
+    else:
+        feature_row = {
+            str(key): str(value)
+            for key, value in dict(metadata.get("features") or {}).items()
+        }
+        router_result = dict(metadata.get("router") or {})
+        plan = plan_processing(
+            goal,
+            _processing_facts(input_path, feature_row),
+            _router_evidence(router_result),
+            _demo_capabilities(),
+        )
+        controller_payload = _plan_payload(plan)
     if plan.action != ACTION_RUN_TASK or plan.blocked_reasons:
         return {
             "status": "blocked",
             "task": request.task,
-            "controller": _plan_payload(plan),
+            "controller": controller_payload,
             "run_dir": "",
             "primary_output_path": "",
             "download_url": None,
@@ -652,18 +667,46 @@ def run(request: RunRequest) -> dict[str, Any]:
     )
     summary = _read_task_summary(run_dir)
     primary_output_path = str(summary.get("primary_output_path") or "")
-    metadata["primary_output_path"] = primary_output_path
-    metadata["last_run_dir"] = str(Path(run_dir).resolve())
+    artifacts: list[dict[str, str]] = []
+    if (
+        summary.get("status") == "success"
+        and preserve_active_fusion
+        and plan.workflow_kind == WORKFLOW_SPEECH_TARGET_NOISE_CLEANUP
+        and request.task == CLEAN_VOICE
+    ):
+        artifacts = [
+            _output_artifact(
+                request.file_id,
+                "enhanced_speech",
+                Path(primary_output_path),
+            )
+        ]
+        artifacts.extend(
+            _write_target_noise_report(
+                file_id=request.file_id,
+                metadata=metadata,
+                input_path=input_path,
+                plan=plan,
+                run_dir=run_dir,
+            )
+        )
+        _store_artifacts(metadata, artifacts, run_dir)
+    else:
+        metadata["primary_output_path"] = primary_output_path
+        metadata["last_run_dir"] = str(Path(run_dir).resolve())
     metadata["last_task"] = request.task
     _write_metadata(request.file_id, metadata)
     return {
         "status": summary.get("status", "failed"),
         "task": request.task,
-        "controller": _plan_payload(plan),
+        "controller": controller_payload,
         "run_dir": str(Path(run_dir).resolve()),
         "primary_output_path": primary_output_path,
+        "outputs": artifacts,
         "download_url": (
-            f"/api/files/{request.file_id}?kind=output"
+            artifacts[0]["download_url"]
+            if artifacts
+            else f"/api/files/{request.file_id}?kind=output"
             if primary_output_path and Path(primary_output_path).is_file()
             else None
         ),
