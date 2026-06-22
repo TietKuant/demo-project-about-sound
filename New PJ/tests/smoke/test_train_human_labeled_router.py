@@ -116,6 +116,10 @@ def test_training_writes_expected_artifacts_and_excludes_unknown_by_default(
         "test_predictions.csv",
         "confusion_matrix.csv",
         "hard_unknown_predictions.csv",
+        "threshold_metrics.csv",
+        "all_error_rows.csv",
+        "accepted_error_rows.csv",
+        "hard_unknown_accepted.csv",
     }
     assert expected_files <= {path.name for path in output_dir.iterdir()}
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
@@ -124,6 +128,9 @@ def test_training_writes_expected_artifacts_and_excludes_unknown_by_default(
     assert metrics["accuracy"] == 1.0
     assert "per_class" in metrics
     assert "confusion_matrix" in metrics
+    assert "accepted_accuracy_at_threshold" in metrics
+    assert "accepted_errors_at_threshold" in metrics
+    assert metrics["hard_unknown_accepted_at_threshold"] == 2
     assert set(metrics["per_class"]) == set(trainer.DEFAULT_LABELS)
 
 

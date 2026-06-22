@@ -42,6 +42,7 @@ DEFAULT_LABELS = [
 ]
 UNKNOWN_LABEL = "unknown_mixed"
 CONFIDENCE_THRESHOLD = 0.70
+EVALUATION_THRESHOLDS = (0.50, 0.60, 0.70, 0.80, 0.90)
 REQUIRED_COLUMNS = {
     "sample_id",
     "path",
@@ -348,6 +349,54 @@ def _worst_confusions(
     return sorted(pairs, key=lambda item: (-item[2], item[0], item[1]))
 
 
+def _safe_ratio(numerator: int, denominator: int) -> float:
+    return float(numerator / denominator) if denominator else 0.0
+
+
+def _threshold_metrics(
+    prediction_rows: Sequence[dict[str, str]],
+) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    total = len(prediction_rows)
+    for threshold in EVALUATION_THRESHOLDS:
+        accepted_rows = [
+            row
+            for row in prediction_rows
+            if float(row["confidence"]) >= threshold
+        ]
+        rejected_rows = [
+            row
+            for row in prediction_rows
+            if float(row["confidence"]) < threshold
+        ]
+        accepted_correct = sum(
+            row["true_label"] == row["predicted_label"]
+            for row in accepted_rows
+        )
+        rejected_correct = sum(
+            row["true_label"] == row["predicted_label"]
+            for row in rejected_rows
+        )
+        rows.append(
+            {
+                "threshold": f"{threshold:.2f}",
+                "accepted": str(len(accepted_rows)),
+                "total": str(total),
+                "coverage": f"{_safe_ratio(len(accepted_rows), total):.10f}",
+                "accepted_correct": str(accepted_correct),
+                "accepted_accuracy": (
+                    f"{_safe_ratio(accepted_correct, len(accepted_rows)):.10f}"
+                ),
+                "rejected": str(len(rejected_rows)),
+                "rejected_correct": str(rejected_correct),
+                "rejected_accuracy": (
+                    f"{_safe_ratio(rejected_correct, len(rejected_rows)):.10f}"
+                ),
+            }
+        )
+    return rows
+
+
 def train_human_labeled_router(
     *,
     manifest_path: str | Path,
@@ -467,6 +516,47 @@ def train_human_labeled_router(
         prediction_fields,
         test_prediction_rows,
     )
+    all_error_rows = sorted(
+        (
+            row
+            for row in test_prediction_rows
+            if row["true_label"] != row["predicted_label"]
+        ),
+        key=lambda row: float(row["confidence"]),
+        reverse=True,
+    )
+    accepted_error_rows = [
+        row
+        for row in all_error_rows
+        if float(row["confidence"]) >= CONFIDENCE_THRESHOLD
+    ]
+    _write_csv(
+        output / "all_error_rows.csv",
+        prediction_fields,
+        all_error_rows,
+    )
+    _write_csv(
+        output / "accepted_error_rows.csv",
+        prediction_fields,
+        accepted_error_rows,
+    )
+    threshold_metric_rows = _threshold_metrics(test_prediction_rows)
+    threshold_fields = [
+        "threshold",
+        "accepted",
+        "total",
+        "coverage",
+        "accepted_correct",
+        "accepted_accuracy",
+        "rejected",
+        "rejected_correct",
+        "rejected_accuracy",
+    ]
+    _write_csv(
+        output / "threshold_metrics.csv",
+        threshold_fields,
+        threshold_metric_rows,
+    )
     confusion_matrix = report["confusion_matrix"]
     _write_csv(
         output / "confusion_matrix.csv",
@@ -488,6 +578,23 @@ def train_human_labeled_router(
             hard_fields,
             hard_prediction_rows,
         )
+        hard_unknown_accepted_rows = [
+            row
+            for row in hard_prediction_rows
+            if float(row["confidence"]) >= CONFIDENCE_THRESHOLD
+        ]
+        _write_csv(
+            output / "hard_unknown_accepted.csv",
+            hard_fields,
+            hard_unknown_accepted_rows,
+        )
+    else:
+        hard_unknown_accepted_rows = []
+    threshold_row = next(
+        row
+        for row in threshold_metric_rows
+        if float(row["threshold"]) == CONFIDENCE_THRESHOLD
+    )
     metrics = {
         "total_rows": len(manifest_rows),
         "train_rows": len(train_rows),
@@ -504,6 +611,15 @@ def train_human_labeled_router(
             sorted(Counter(row["human_label"] for row in manifest_rows).items())
         ),
         "confidence_threshold": CONFIDENCE_THRESHOLD,
+        "accepted_at_threshold": int(threshold_row["accepted"]),
+        "coverage_at_threshold": float(threshold_row["coverage"]),
+        "accepted_accuracy_at_threshold": float(
+            threshold_row["accepted_accuracy"]
+        ),
+        "accepted_errors_at_threshold": len(accepted_error_rows),
+        "hard_unknown_accepted_at_threshold": len(
+            hard_unknown_accepted_rows
+        ),
     }
     (output / "metrics.json").write_text(
         json.dumps(metrics, indent=2) + "\n",
@@ -523,6 +639,12 @@ def train_human_labeled_router(
     print(
         f"Accuracy: {report['accuracy']:.4f}; "
         f"macro_f1: {report['macro_f1']:.4f}"
+    )
+    print(
+        f"Accepted accuracy at {CONFIDENCE_THRESHOLD:.2f}: "
+        f"{metrics['accepted_accuracy_at_threshold']:.4f}; "
+        f"accepted errors: {len(accepted_error_rows)}; "
+        f"hard unknown accepted: {len(hard_unknown_accepted_rows)}"
     )
     worst = _worst_confusions(confusion_matrix)
     if worst:
