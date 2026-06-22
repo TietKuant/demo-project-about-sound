@@ -37,8 +37,12 @@ def _run_with_predictions(
 
     def fake_predict(state, _features):
         if state["kind"] == "router":
-            return baseline_label, baseline_confidence
-        return gate_label, gate_confidence
+            return (
+                baseline_label,
+                baseline_confidence,
+                {baseline_label: baseline_confidence},
+            )
+        return gate_label, gate_confidence, {gate_label: gate_confidence}
 
     monkeypatch.setattr(guarded, "_load_checkpoint", fake_load)
     monkeypatch.setattr(
@@ -50,8 +54,9 @@ def _run_with_predictions(
     return guarded.run_guarded_router(
         input_path=input_path,
         router_checkpoint=router_checkpoint,
-        gate_checkpoint=gate_checkpoint,
-        threshold=0.70,
+        speech_gate_checkpoint=gate_checkpoint,
+        router_threshold=0.70,
+        speech_threshold=0.70,
     )
 
 
@@ -65,7 +70,7 @@ def test_speech_cleanup_is_blocked_by_non_speech_gate(tmp_path, monkeypatch):
         gate_confidence=0.95,
     )
 
-    assert result["baseline_workflow"] == "speech_cleanup"
+    assert result["router_workflow"] == "speech_cleanup"
     assert result["final_workflow"] == "safe_abstain"
     assert result["guard_applied"] is True
     assert result["reason"] == "speech_cleanup_blocked_by_speech_gate"
@@ -99,7 +104,7 @@ def test_low_baseline_confidence_abstains_before_workflow_acceptance(
         gate_confidence=0.98,
     )
 
-    assert result["baseline_workflow"] == "no_process"
+    assert result["router_workflow"] == "no_process"
     assert result["final_workflow"] == "safe_abstain"
     assert result["reason"] == "baseline_confidence_below_threshold"
 
@@ -122,16 +127,20 @@ def test_high_confidence_no_process_is_accepted(tmp_path, monkeypatch):
 def test_json_output_shape(tmp_path, monkeypatch, capsys):
     input_path, router_checkpoint, gate_checkpoint = _runtime_files(tmp_path)
     result = {
-        "input": str(input_path.resolve()),
-        "baseline_label": "speech_clean",
-        "baseline_confidence": 0.9,
-        "baseline_workflow": "no_process",
+        "input_path": str(input_path.resolve()),
+        "router_label": "speech_clean",
+        "router_workflow": "no_process",
+        "router_confidence": 0.9,
+        "router_accepted": True,
         "speech_gate_label": "speech_present",
         "speech_gate_confidence": 0.8,
-        "threshold": 0.7,
+        "speech_gate_accepted": True,
         "guard_applied": False,
         "final_workflow": "no_process",
+        "final_accepted": True,
         "reason": "accepted",
+        "router_probabilities": {"speech_clean": 0.9},
+        "speech_gate_probabilities": {"speech_present": 0.8},
     }
     monkeypatch.setattr(guarded, "run_guarded_router", lambda **_kwargs: result)
     monkeypatch.setattr(
@@ -143,7 +152,7 @@ def test_json_output_shape(tmp_path, monkeypatch, capsys):
             str(input_path),
             "--router-checkpoint",
             str(router_checkpoint),
-            "--gate-checkpoint",
+            "--speech-gate-checkpoint",
             str(gate_checkpoint),
             "--json",
         ],
@@ -152,16 +161,20 @@ def test_json_output_shape(tmp_path, monkeypatch, capsys):
     assert guarded.main() == 0
     payload = json.loads(capsys.readouterr().out)
     assert set(payload) == {
-        "input",
-        "baseline_label",
-        "baseline_confidence",
-        "baseline_workflow",
+        "input_path",
+        "router_label",
+        "router_workflow",
+        "router_confidence",
+        "router_accepted",
         "speech_gate_label",
         "speech_gate_confidence",
-        "threshold",
+        "speech_gate_accepted",
         "guard_applied",
         "final_workflow",
+        "final_accepted",
         "reason",
+        "router_probabilities",
+        "speech_gate_probabilities",
     }
 
 
@@ -186,5 +199,21 @@ def test_missing_runtime_file_validation(tmp_path, missing, message):
         guarded.run_guarded_router(
             input_path=input_path,
             router_checkpoint=router_checkpoint,
-            gate_checkpoint=gate_checkpoint,
+            speech_gate_checkpoint=gate_checkpoint,
         )
+
+
+def test_invalid_checkpoint_schema_raises_clear_error(tmp_path, monkeypatch):
+    checkpoint = tmp_path / "bad.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    monkeypatch.setattr(
+        guarded.torch,
+        "load",
+        lambda *_args, **_kwargs: {
+            "model_state_dict": {},
+            "config": {"feature_columns": ["rms_energy"]},
+        },
+    )
+
+    with pytest.raises(ValueError, match="feature_stats"):
+        guarded._load_checkpoint(checkpoint)

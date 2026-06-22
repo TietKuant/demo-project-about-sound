@@ -40,11 +40,11 @@ SAFE_ABSTAIN = "safe_abstain"
 def _validate_runtime_paths(
     input_path: str | Path,
     router_checkpoint: str | Path,
-    gate_checkpoint: str | Path,
+    speech_gate_checkpoint: str | Path,
 ) -> tuple[Path, Path, Path]:
     input_file = Path(input_path).expanduser().resolve(strict=False)
     router_file = Path(router_checkpoint).expanduser().resolve(strict=False)
-    gate_file = Path(gate_checkpoint).expanduser().resolve(strict=False)
+    gate_file = Path(speech_gate_checkpoint).expanduser().resolve(strict=False)
     if not input_file.is_file():
         raise FileNotFoundError(f"Guarded router input file not found: {input_file}")
     if not router_file.is_file():
@@ -80,6 +80,10 @@ def _load_checkpoint(checkpoint_path: Path) -> dict[str, Any]:
         raise ValueError(
             f"Checkpoint config {checkpoint_path} is missing keys: "
             + ", ".join(sorted(config_missing))
+        )
+    if "confidence_threshold" not in config and "threshold" not in config:
+        raise ValueError(
+            f"Checkpoint config {checkpoint_path} is missing threshold/config."
         )
     return checkpoint
 
@@ -123,7 +127,7 @@ def _normalized_vector(
 def _predict_checkpoint(
     checkpoint: Mapping[str, Any],
     features: Mapping[str, float],
-) -> tuple[str, float]:
+) -> tuple[str, float, dict[str, float]]:
     config = checkpoint["config"]
     feature_columns = list(config["feature_columns"])
     label_to_index = {
@@ -151,38 +155,49 @@ def _predict_checkpoint(
         logits = model(torch.tensor(normalized, dtype=torch.float32))
         probabilities = F.softmax(logits, dim=1)[0].cpu()
     predicted_index = int(torch.argmax(probabilities).item())
-    return index_to_label[predicted_index], float(probabilities[predicted_index].item())
+    probability_map = {
+        index_to_label[index]: float(probabilities[index].item())
+        for index in range(len(index_to_label))
+    }
+    return (
+        index_to_label[predicted_index],
+        float(probabilities[predicted_index].item()),
+        probability_map,
+    )
 
 
 def _guard_decision(
     *,
-    baseline_workflow: str,
-    baseline_confidence: float,
+    router_workflow: str,
+    router_accepted: bool,
     speech_gate_label: str,
     speech_gate_confidence: float,
-    threshold: float,
+    speech_threshold: float,
 ) -> dict[str, object]:
-    if baseline_confidence < threshold:
+    if not router_accepted:
         return {
             "guard_applied": True,
             "final_workflow": SAFE_ABSTAIN,
+            "final_accepted": False,
             "reason": "baseline_confidence_below_threshold",
         }
     if (
-        baseline_workflow == SPEECH_CLEANUP
+        router_workflow == SPEECH_CLEANUP
         and (
             speech_gate_label != SPEECH_PRESENT
-            or speech_gate_confidence < threshold
+            or speech_gate_confidence < speech_threshold
         )
     ):
         return {
             "guard_applied": True,
             "final_workflow": SAFE_ABSTAIN,
+            "final_accepted": False,
             "reason": "speech_cleanup_blocked_by_speech_gate",
         }
     return {
         "guard_applied": False,
-        "final_workflow": baseline_workflow,
+        "final_workflow": router_workflow,
+        "final_accepted": True,
         "reason": "accepted",
     }
 
@@ -191,16 +206,19 @@ def run_guarded_router(
     *,
     input_path: str | Path,
     router_checkpoint: str | Path,
-    gate_checkpoint: str | Path,
-    threshold: float = 0.70,
+    speech_gate_checkpoint: str | Path,
+    router_threshold: float = 0.70,
+    speech_threshold: float = 0.70,
 ) -> dict[str, object]:
     """Return a guarded workflow decision for one media input."""
-    if not 0.0 <= threshold <= 1.0:
-        raise ValueError("--threshold must be between 0 and 1.")
+    if not 0.0 <= router_threshold <= 1.0:
+        raise ValueError("--router-threshold must be between 0 and 1.")
+    if not 0.0 <= speech_threshold <= 1.0:
+        raise ValueError("--speech-threshold must be between 0 and 1.")
     input_file, router_file, gate_file = _validate_runtime_paths(
         input_path,
         router_checkpoint,
-        gate_checkpoint,
+        speech_gate_checkpoint,
     )
     router_state = _load_checkpoint(router_file)
     gate_state = _load_checkpoint(gate_file)
@@ -213,34 +231,42 @@ def run_guarded_router(
         )
     )
     features = _extract_input_features(input_file, feature_columns)
-    baseline_label, baseline_confidence = _predict_checkpoint(
+    router_label, router_confidence, router_probabilities = _predict_checkpoint(
         router_state,
         features,
     )
-    if baseline_label not in WORKFLOW_BY_LABEL:
-        raise ValueError(f"Unsupported baseline router label: {baseline_label}")
-    baseline_workflow = WORKFLOW_BY_LABEL[baseline_label]
-    speech_gate_label, speech_gate_confidence = _predict_checkpoint(
+    if router_label not in WORKFLOW_BY_LABEL:
+        raise ValueError(f"Unsupported router label: {router_label}")
+    router_workflow = WORKFLOW_BY_LABEL[router_label]
+    router_accepted = router_confidence >= router_threshold
+    (
+        speech_gate_label,
+        speech_gate_confidence,
+        speech_gate_probabilities,
+    ) = _predict_checkpoint(
         gate_state,
         features,
     )
     if speech_gate_label not in {"speech_present", "non_speech"}:
         raise ValueError(f"Unsupported speech gate label: {speech_gate_label}")
     decision = _guard_decision(
-        baseline_workflow=baseline_workflow,
-        baseline_confidence=baseline_confidence,
+        router_workflow=router_workflow,
+        router_accepted=router_accepted,
         speech_gate_label=speech_gate_label,
         speech_gate_confidence=speech_gate_confidence,
-        threshold=threshold,
+        speech_threshold=speech_threshold,
     )
     return {
-        "input": str(input_file),
-        "baseline_label": baseline_label,
-        "baseline_confidence": baseline_confidence,
-        "baseline_workflow": baseline_workflow,
+        "input_path": str(input_file),
+        "router_label": router_label,
+        "router_workflow": router_workflow,
+        "router_confidence": router_confidence,
+        "router_accepted": router_accepted,
         "speech_gate_label": speech_gate_label,
         "speech_gate_confidence": speech_gate_confidence,
-        "threshold": threshold,
+        "speech_gate_accepted": speech_gate_confidence >= speech_threshold,
+        "router_probabilities": router_probabilities,
+        "speech_gate_probabilities": speech_gate_probabilities,
         **decision,
     }
 
@@ -251,8 +277,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--router-checkpoint", required=True, type=Path)
-    parser.add_argument("--gate-checkpoint", required=True, type=Path)
-    parser.add_argument("--threshold", default=0.70, type=float)
+    parser.add_argument("--speech-gate-checkpoint", required=True, type=Path)
+    parser.add_argument("--router-threshold", default=0.70, type=float)
+    parser.add_argument("--speech-threshold", default=0.70, type=float)
     parser.add_argument("--json", action="store_true", dest="json_output")
     return parser
 
@@ -263,8 +290,9 @@ def main() -> int:
         result = run_guarded_router(
             input_path=args.input,
             router_checkpoint=args.router_checkpoint,
-            gate_checkpoint=args.gate_checkpoint,
-            threshold=args.threshold,
+            speech_gate_checkpoint=args.speech_gate_checkpoint,
+            router_threshold=args.router_threshold,
+            speech_threshold=args.speech_threshold,
         )
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -274,8 +302,8 @@ def main() -> int:
     else:
         print(
             f"{result['final_workflow']} "
-            f"(baseline={result['baseline_label']} "
-            f"{result['baseline_confidence']:.4f}; "
+            f"(router={result['router_label']} "
+            f"{result['router_confidence']:.4f}; "
             f"gate={result['speech_gate_label']} "
             f"{result['speech_gate_confidence']:.4f}; "
             f"reason={result['reason']})"
