@@ -233,6 +233,10 @@ export default function App() {
     ? "Automatic recommendation mode — the controller only runs a task when evidence is trusted."
     : "Directed goal verification — the controller checks whether the selected goal maps to a safe engine.";
   const inputUrl = analysis ? `/api/files/${analysis.file_id}?kind=input` : "";
+  const isEnvironmentEventAnalysis =
+    controller?.workflow_kind === "environment_event_analysis";
+  const canRunControllerPlan =
+    controller?.decision === "run_task" || isEnvironmentEventAnalysis;
 
   return (
     <main className="app-shell">
@@ -300,9 +304,15 @@ export default function App() {
             <button
               className="primary"
               onClick={runControllerPlan}
-              disabled={Boolean(busy) || controller?.decision !== "run_task"}
+              disabled={Boolean(busy) || !canRunControllerPlan}
             >
-              {busy === "recommended" ? "Running…" : "Run controller plan"}
+              {busy === "recommended"
+                ? isEnvironmentEventAnalysis
+                  ? "Generating report…"
+                  : "Running…"
+                : isEnvironmentEventAnalysis
+                  ? "Generate environment report"
+                  : "Run controller plan"}
             </button>
           </div>
 
