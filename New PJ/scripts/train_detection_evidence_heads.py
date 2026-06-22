@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train three binary detector heads from Detection Evidence Dataset v1."""
+"""Train binary detector heads from Detection Evidence Dataset v1."""
 
 from __future__ import annotations
 
@@ -30,7 +30,14 @@ from scripts.build_detection_evidence_dataset import (
 )
 
 
-HEADS = ("speech_present", "music_present", "target_event_present")
+HEADS = (
+    "speech_present",
+    "music_present",
+    "target_event_present",
+    "siren_present",
+    "car_horn_present",
+    "dog_bark_present",
+)
 FEATURE_COLUMNS = [
     *SIGNAL_FEATURE_COLUMNS,
     *[f"router_prob_{label}" for label in ROUTER_LABELS],
@@ -42,10 +49,11 @@ FEATURE_COLUMNS = [
 ]
 CLASS_WEIGHTING_CHOICES = {"none", "balanced"}
 PREDICTION_THRESHOLD = 0.5
+THRESHOLD_SWEEP = tuple(index / 10 for index in range(1, 10))
 
 
 class DetectionEvidenceHeads(nn.Module):
-    """Small shared representation with three binary logits."""
+    """Small shared representation with binary detector logits."""
 
     def __init__(self, input_dim: int, hidden_dim: int = 16) -> None:
         super().__init__()
@@ -101,6 +109,7 @@ def _load_rows(path: Path) -> list[dict[str, str]]:
 
 
 def _targets(row: Mapping[str, str]) -> dict[str, int]:
+    target_noise_label = str(row.get("target_noise_label") or "").strip()
     return {
         "speech_present": int(_truthy(row.get("contains_speech"))),
         "music_present": int(
@@ -109,8 +118,11 @@ def _targets(row: Mapping[str, str]) -> dict[str, int]:
         ),
         "target_event_present": int(
             _truthy(row.get("contains_target_noise"))
-            or bool(str(row.get("target_noise_label") or "").strip())
+            or bool(target_noise_label)
         ),
+        "siren_present": int(target_noise_label == "siren"),
+        "car_horn_present": int(target_noise_label == "car_horn"),
+        "dog_bark_present": int(target_noise_label == "dog_bark"),
     }
 
 
@@ -171,6 +183,75 @@ def _binary_metrics(truth: Sequence[int], predictions: Sequence[int]) -> dict[st
             "false_negative": false_negative,
         },
     }
+
+
+def _threshold_sweep_rows(
+    probabilities: Mapping[str, np.ndarray],
+    test_rows: Sequence[dict[str, str]],
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for head in HEADS:
+        truth = [_targets(row)[head] for row in test_rows]
+        for threshold in THRESHOLD_SWEEP:
+            predictions = [
+                int(probability >= threshold)
+                for probability in probabilities[head]
+            ]
+            metric = _binary_metrics(truth, predictions)
+            confusion = metric["confusion"]
+            rows.append(
+                {
+                    "head": head,
+                    "threshold": threshold,
+                    "accuracy": metric["accuracy"],
+                    "precision": metric["precision"],
+                    "recall": metric["recall"],
+                    "f1": metric["f1"],
+                    "tp": confusion["true_positive"],
+                    "tn": confusion["true_negative"],
+                    "fp": confusion["false_positive"],
+                    "fn": confusion["false_negative"],
+                }
+            )
+    return rows
+
+
+def _recommended_thresholds(
+    sweep_rows: Sequence[Mapping[str, object]],
+) -> dict[str, float]:
+    recommended: dict[str, float] = {}
+    for head in HEADS:
+        head_rows = [row for row in sweep_rows if row["head"] == head]
+        if head == "speech_present":
+            qualifying = [
+                row for row in head_rows if float(row["recall"]) >= 0.90
+            ]
+            if qualifying:
+                selected = max(
+                    qualifying,
+                    key=lambda row: (
+                        float(row["precision"]),
+                        float(row["threshold"]),
+                    ),
+                )
+            else:
+                selected = max(
+                    head_rows,
+                    key=lambda row: (
+                        float(row["f1"]),
+                        float(row["threshold"]),
+                    ),
+                )
+        else:
+            selected = max(
+                head_rows,
+                key=lambda row: (
+                    float(row["f1"]),
+                    float(row["threshold"]),
+                ),
+            )
+        recommended[head] = float(selected["threshold"])
+    return recommended
 
 
 def train_detection_evidence_heads(
@@ -271,6 +352,8 @@ def train_detection_evidence_heads(
             for probability in test_probabilities[head]
         ]
         metrics["heads"][head] = _binary_metrics(truth, predictions)
+    sweep_rows = _threshold_sweep_rows(test_probabilities, test_rows)
+    metrics["recommended_thresholds"] = _recommended_thresholds(sweep_rows)
 
     output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -303,6 +386,28 @@ def train_detection_evidence_heads(
     )
     (output / "metrics.json").write_text(
         json.dumps(metrics, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    sweep_fieldnames = [
+        "head",
+        "threshold",
+        "accuracy",
+        "precision",
+        "recall",
+        "f1",
+        "tp",
+        "tn",
+        "fp",
+        "fn",
+    ]
+    with (output / "threshold_sweep.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as handle:
+        writer = csv.DictWriter(handle, fieldnames=sweep_fieldnames)
+        writer.writeheader()
+        writer.writerows(sweep_rows)
+    (output / "threshold_sweep.json").write_text(
+        json.dumps(sweep_rows, indent=2) + "\n",
         encoding="utf-8",
     )
     prediction_fields = ["sample_id", "input_path"]

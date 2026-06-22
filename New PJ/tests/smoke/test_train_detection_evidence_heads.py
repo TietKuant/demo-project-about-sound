@@ -18,8 +18,9 @@ def _evidence_row(
     *,
     speech: bool,
     music: bool,
-    target: bool,
+    target_label: str = "",
 ) -> dict[str, str]:
+    target = bool(target_label)
     row = {
         "sample_id": sample_id,
         "input_path": f"/tmp/{sample_id}.wav",
@@ -37,7 +38,7 @@ def _evidence_row(
         "contains_speech": str(speech).lower(),
         "contains_music": str(music).lower(),
         "contains_target_noise": str(target).lower(),
-        "target_noise_label": "siren" if target else "",
+        "target_noise_label": target_label,
     }
     base = 1.0 if speech else 0.1
     for index, column in enumerate(FEATURE_COLUMNS):
@@ -54,22 +55,23 @@ def _write_evidence(path, rows):
 
 def _balanced_rows():
     combinations = [
-        (True, False, False),
-        (False, True, False),
-        (True, False, True),
-        (False, False, True),
-        (False, False, False),
+        (True, False, ""),
+        (False, True, ""),
+        (True, False, "siren"),
+        (False, False, "car_horn"),
+        (False, False, "dog_bark"),
+        (False, False, ""),
     ]
     rows = []
     for split in ("train", "test"):
-        for index, (speech, music, target) in enumerate(combinations):
+        for index, (speech, music, target_label) in enumerate(combinations):
             rows.append(
                 _evidence_row(
                     f"{split}-{index}",
                     split,
                     speech=speech,
                     music=music,
-                    target=target,
+                    target_label=target_label,
                 )
             )
     return rows
@@ -83,7 +85,7 @@ def test_trainer_rejects_missing_class_coverage(tmp_path):
             split,
             speech=True,
             music=False,
-            target=False,
+            target_label="",
         )
         for split in ("train", "test")
         for index in range(2)
@@ -116,9 +118,12 @@ def test_trainer_writes_checkpoint_metrics_and_predictions(tmp_path):
         "metrics.json",
         "test_predictions.csv",
         "feature_columns.json",
+        "threshold_sweep.csv",
+        "threshold_sweep.json",
     } <= {path.name for path in output_dir.iterdir()}
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     assert set(metrics["heads"]) == set(HEADS)
+    assert set(metrics["recommended_thresholds"]) == set(HEADS)
     for head in HEADS:
         assert {"accuracy", "precision", "recall", "f1", "confusion"} <= set(
             metrics["heads"][head]
@@ -133,5 +138,19 @@ def test_trainer_writes_checkpoint_metrics_and_predictions(tmp_path):
         newline="", encoding="utf-8"
     ) as handle:
         prediction_rows = list(csv.DictReader(handle))
-    assert len(prediction_rows) == 5
+    assert len(prediction_rows) == 6
     assert "speech_present_probability" in prediction_rows[0]
+    for head in HEADS:
+        assert f"{head}_true" in prediction_rows[0]
+        assert f"{head}_probability" in prediction_rows[0]
+        assert f"{head}_predicted" in prediction_rows[0]
+    with (output_dir / "threshold_sweep.csv").open(
+        newline="", encoding="utf-8"
+    ) as handle:
+        sweep_rows = list(csv.DictReader(handle))
+    assert len(sweep_rows) == len(HEADS) * 9
+    assert {row["head"] for row in sweep_rows} == set(HEADS)
+    sweep_json = json.loads(
+        (output_dir / "threshold_sweep.json").read_text(encoding="utf-8")
+    )
+    assert len(sweep_json) == len(HEADS) * 9
