@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import shutil
 import uuid
 from pathlib import Path
@@ -23,6 +24,7 @@ from app.audio_task_demo import (
     _processing_facts,
     _router_evidence,
 )
+from scripts.run_detection_fusion import run_detection_fusion
 from scripts.run_audio_task import run_audio_task
 from src.planner.processing_planner import (
     ACTION_ANALYZE_ONLY,
@@ -54,6 +56,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 UPLOAD_ROOT = PROJECT_ROOT / "outputs" / "api-uploads"
 RUN_ROOT = PROJECT_ROOT / "outputs" / "api-runs"
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
+DETECTION_FUSION_HEAD_CHECKPOINT_ENV_VAR = (
+    "DETECTION_FUSION_HEAD_CHECKPOINT"
+)
+DETECTION_FUSION_ROUTER_CHECKPOINT_ENV_VAR = (
+    "DETECTION_FUSION_ROUTER_CHECKPOINT"
+)
+DETECTION_FUSION_SPEECH_GATE_CHECKPOINT_ENV_VAR = (
+    "DETECTION_FUSION_SPEECH_GATE_CHECKPOINT"
+)
+DETECTION_FUSION_SPEECH_THRESHOLD = 0.6
+DETECTION_FUSION_MUSIC_THRESHOLD = 0.7
+DETECTION_FUSION_TARGET_THRESHOLD = 0.8
 
 SUPPORTED_GOALS = {
     ANALYZE_ONLY,
@@ -170,6 +184,77 @@ def _router_payload(router_result: dict[str, object]) -> dict[str, Any]:
 
 def _feature_payload(feature_row: dict[str, str]) -> dict[str, str]:
     return {field: str(feature_row.get(field, "")) for field in FEATURE_FIELDS}
+
+
+def _experimental_detection_fusion(input_path: Path) -> dict[str, Any]:
+    checkpoint_values = {
+        "head_checkpoint": os.environ.get(
+            DETECTION_FUSION_HEAD_CHECKPOINT_ENV_VAR, ""
+        ).strip(),
+        "router_checkpoint": os.environ.get(
+            DETECTION_FUSION_ROUTER_CHECKPOINT_ENV_VAR, ""
+        ).strip(),
+        "speech_gate_checkpoint": os.environ.get(
+            DETECTION_FUSION_SPEECH_GATE_CHECKPOINT_ENV_VAR, ""
+        ).strip(),
+    }
+    missing_config = [
+        env_var
+        for env_var, value in (
+            (
+                DETECTION_FUSION_HEAD_CHECKPOINT_ENV_VAR,
+                checkpoint_values["head_checkpoint"],
+            ),
+            (
+                DETECTION_FUSION_ROUTER_CHECKPOINT_ENV_VAR,
+                checkpoint_values["router_checkpoint"],
+            ),
+            (
+                DETECTION_FUSION_SPEECH_GATE_CHECKPOINT_ENV_VAR,
+                checkpoint_values["speech_gate_checkpoint"],
+            ),
+        )
+        if not value
+    ]
+    if missing_config:
+        return {
+            "enabled": False,
+            "reason": "detection_fusion_checkpoint_not_configured",
+            "missing_configuration": missing_config,
+        }
+
+    missing_files = [
+        str(Path(value).expanduser())
+        for value in checkpoint_values.values()
+        if not Path(value).expanduser().is_file()
+    ]
+    if missing_files:
+        return {
+            "enabled": False,
+            "reason": "detection_fusion_checkpoint_missing",
+            "missing_checkpoints": missing_files,
+        }
+
+    try:
+        result = run_detection_fusion(
+            input_path=input_path,
+            head_checkpoint=checkpoint_values["head_checkpoint"],
+            router_checkpoint=checkpoint_values["router_checkpoint"],
+            speech_gate_checkpoint=checkpoint_values["speech_gate_checkpoint"],
+            speech_threshold=DETECTION_FUSION_SPEECH_THRESHOLD,
+            music_threshold=DETECTION_FUSION_MUSIC_THRESHOLD,
+            target_threshold=DETECTION_FUSION_TARGET_THRESHOLD,
+        )
+    except Exception as exc:
+        return {
+            "enabled": False,
+            "reason": "detection_fusion_failed",
+            "error": str(exc),
+        }
+    return {
+        "enabled": True,
+        **result,
+    }
 
 
 def _read_task_summary(run_dir: Path) -> dict[str, str]:
@@ -405,6 +490,7 @@ async def analyze(file: UploadFile = File(...), goal: str = Form(...)) -> dict[s
         raise HTTPException(status_code=422, detail=f"Audio feature extraction failed: {exc}") from exc
 
     router_result = _optional_router_result(input_path)
+    experimental_detection_fusion = _experimental_detection_fusion(input_path)
     facts = _processing_facts(input_path, feature_row)
     plan = plan_processing(
         goal,
@@ -430,6 +516,7 @@ async def analyze(file: UploadFile = File(...), goal: str = Form(...)) -> dict[s
         "controller": _plan_payload(plan),
         "router": _router_payload(router_result),
         "features": _feature_payload(feature_row),
+        "experimental_detection_fusion": experimental_detection_fusion,
     }
 
 

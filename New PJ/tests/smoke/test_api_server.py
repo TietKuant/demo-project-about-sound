@@ -17,6 +17,12 @@ from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, TARGET_NOISE_S
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(api_server, "UPLOAD_ROOT", tmp_path / "uploads")
     monkeypatch.setattr(api_server, "RUN_ROOT", tmp_path / "runs")
+    for env_var in (
+        api_server.DETECTION_FUSION_HEAD_CHECKPOINT_ENV_VAR,
+        api_server.DETECTION_FUSION_ROUTER_CHECKPOINT_ENV_VAR,
+        api_server.DETECTION_FUSION_SPEECH_GATE_CHECKPOINT_ENV_VAR,
+    ):
+        monkeypatch.delenv(env_var, raising=False)
     return TestClient(api_server.api)
 
 
@@ -77,6 +83,63 @@ def test_api_analyze_returns_controller_router_and_features(client: TestClient) 
     assert payload["controller"]["recommended_tasks"] == [CLEAN_VOICE]
     assert payload["router"]["status"] == "disabled"
     assert payload["features"]["duration_sec"] == "2.000000"
+    assert payload["experimental_detection_fusion"] == {
+        "enabled": False,
+        "reason": "detection_fusion_checkpoint_not_configured",
+        "missing_configuration": [
+            api_server.DETECTION_FUSION_HEAD_CHECKPOINT_ENV_VAR,
+            api_server.DETECTION_FUSION_ROUTER_CHECKPOINT_ENV_VAR,
+            api_server.DETECTION_FUSION_SPEECH_GATE_CHECKPOINT_ENV_VAR,
+        ],
+    }
+
+
+def test_api_analyze_exposes_experimental_detection_fusion(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoints = {
+        api_server.DETECTION_FUSION_HEAD_CHECKPOINT_ENV_VAR: (
+            tmp_path / "heads.pt"
+        ),
+        api_server.DETECTION_FUSION_ROUTER_CHECKPOINT_ENV_VAR: (
+            tmp_path / "router.pt"
+        ),
+        api_server.DETECTION_FUSION_SPEECH_GATE_CHECKPOINT_ENV_VAR: (
+            tmp_path / "gate.pt"
+        ),
+    }
+    for env_var, checkpoint in checkpoints.items():
+        checkpoint.write_bytes(b"fixture")
+        monkeypatch.setenv(env_var, str(checkpoint))
+
+    fusion_result = {
+        "fusion_label": "speech_target_noise",
+        "recommended_workflow": "speech_target_noise_cleanup",
+        "detection_scores": {
+            "speech_present": 0.91,
+            "music_present": 0.04,
+            "target_event_present": 0.88,
+        },
+        "review_recommended": True,
+        "review_reasons": ["router_fusion_conflict"],
+        "abstain": False,
+        "abstain_reason": "",
+    }
+    with patch(
+        "app.api_server.run_detection_fusion",
+        return_value=fusion_result,
+    ) as fusion_mock:
+        payload = _analyze(client)
+
+    fusion_mock.assert_called_once()
+    assert payload["controller"]["recommended_task"] == CLEAN_VOICE
+    assert payload["router"]["status"] == "disabled"
+    assert payload["experimental_detection_fusion"] == {
+        "enabled": True,
+        **fusion_result,
+    }
 
 
 def test_api_run_blocks_target_noise_suppression(client: TestClient) -> None:
