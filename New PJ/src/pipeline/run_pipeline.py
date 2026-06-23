@@ -5,11 +5,16 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from src.api.contracts import DenoiseRequest, DenoiseResult
+from src.api.contracts import DenoiseRequest, DenoiseResult, OutputArtifact, ProcessingResult
 from src.eval.checks import evaluate_output_artifact
+from src.engine.base import DenoiseEngine
+from src.engine.deepfilternet_cli_engine import DeepFilterNetCliEngine
+from src.engine.ffmpeg_arnndn_engine import FFmpegArnndnEngine
+from src.engine.noisereduce_engine import NoisereduceEngine
 from src.io.paths import (
     derive_manifest_path,
     derive_output_mode,
+    derive_planned_output_path,
     infer_input_type,
     validate_input_path,
     validate_output_dir,
@@ -18,12 +23,78 @@ from src.media.ffmpeg_wrapper import FFmpegWrapper
 from src.storage.manifest import build_run_manifest, write_manifest
 
 
+VIDEO_OUTPUT_SUFFIXES = {".mp4", ".mov", ".mkv"}
+
+
 def _log(message: str) -> None:
     print(message)
 
 
+def _build_engine(engine_name: str, ffmpeg_wrapper: FFmpegWrapper) -> DenoiseEngine:
+    """Return the selected denoise engine."""
+    if engine_name == "ffmpeg-arnndn":
+        return FFmpegArnndnEngine(ffmpeg_wrapper=ffmpeg_wrapper)
+    if engine_name == "noisereduce":
+        return NoisereduceEngine()
+    if engine_name == "deepfilternet":
+        return DeepFilterNetCliEngine()
+    raise ValueError(f"Unsupported denoise engine: {engine_name}")
+
+
+def _output_media_type(path: Path) -> str:
+    """Infer the user-facing media type from the final output suffix."""
+    return "video" if path.suffix.lower() in VIDEO_OUTPUT_SUFFIXES else "audio"
+
+
+def _pipeline_status_failed(status: str) -> bool:
+    normalized = status.strip().lower()
+    return normalized in {"failed", "error"} or normalized.startswith("failed")
+
+
+def pipeline_result_to_processing_result(
+    result: DenoiseResult,
+    *,
+    task_name: str = "clean_voice",
+    runtime_sec: float | None = None,
+) -> ProcessingResult:
+    """Adapt the existing single-output pipeline result to the V2 artifact contract."""
+    if _pipeline_status_failed(result.status):
+        return ProcessingResult(
+            task_name=task_name,
+            engine_name=result.engine_name,
+            status="failed",
+            runtime_sec=runtime_sec,
+            outputs=[],
+            error=f"Pipeline status indicates failure: {result.status}",
+        )
+    if result.final_output_path is None:
+        return ProcessingResult(
+            task_name=task_name,
+            engine_name=result.engine_name,
+            status="failed",
+            runtime_sec=runtime_sec,
+            outputs=[],
+            error="Pipeline did not return a final output path.",
+        )
+
+    return ProcessingResult(
+        task_name=task_name,
+        engine_name=result.engine_name,
+        status="success",
+        runtime_sec=runtime_sec,
+        outputs=[
+            OutputArtifact(
+                label="restored",
+                path=result.final_output_path,
+                media_type=_output_media_type(result.final_output_path),
+                role="primary",
+            )
+        ],
+    )
+
+
 def run_pipeline(request: DenoiseRequest, ffmpeg_wrapper: FFmpegWrapper | None = None) -> DenoiseResult:
-    """Run the arnndn pipeline and write a manifest artifact."""
+    """Run the denoise pipeline and write a manifest artifact."""
     stage_statuses: dict[str, str] = {}
 
     input_path = validate_input_path(request.input_path)
@@ -41,7 +112,12 @@ def run_pipeline(request: DenoiseRequest, ffmpeg_wrapper: FFmpegWrapper | None =
     stage_statuses["prepare_audio"] = "completed_real"
     _log(f"[prepare_audio] completed_real path={prepared_audio_path}")
 
-    denoised_audio_path = ffmpeg.denoise_audio(prepared_audio_path, input_path, output_dir)
+    engine = _build_engine(request.engine_name, ffmpeg)
+    engine.load()
+    denoised_audio_path = engine.denoise(
+        prepared_audio_path,
+        derive_planned_output_path(input_path, output_dir, output_mode="audio"),
+    )
     stage_statuses["denoise"] = "completed_real"
     _log(f"[denoise] completed_real path={denoised_audio_path}")
 
@@ -63,7 +139,7 @@ def run_pipeline(request: DenoiseRequest, ffmpeg_wrapper: FFmpegWrapper | None =
             "clean_audio_path": str(denoised_audio_path),
             "final_media_path": str(final_media_path),
         },
-        selected_engine="ffmpeg-arnndn",
+        selected_engine=engine.name,
         stage_statuses=stage_statuses,
         dry_run=False,
         final_status="completed_real",
@@ -85,7 +161,7 @@ def run_pipeline(request: DenoiseRequest, ffmpeg_wrapper: FFmpegWrapper | None =
         status="completed_real",
         final_output_path=final_media_path,
         intermediate_audio_path=prepared_audio_path,
-        engine_name="ffmpeg-arnndn",
+        engine_name=engine.name,
         run_summary=manifest_payload,
     )
 
@@ -110,6 +186,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional arnndn mix value passed to ffmpeg.",
     )
+    parser.add_argument(
+        "--engine",
+        choices=("ffmpeg-arnndn", "noisereduce", "deepfilternet"),
+        default="ffmpeg-arnndn",
+        help="Denoise engine to use.",
+    )
     return parser
 
 
@@ -126,6 +208,7 @@ def main() -> int:
             output_dir=output_dir,
             output_mode=output_mode,
             keep_intermediates=args.keep_intermediates,
+            engine_name=args.engine,
         )
         result = run_pipeline(request, ffmpeg_wrapper=FFmpegWrapper(arnndn_mix=args.arnndn_mix))
         _log(f"[result] status={result.status} output={result.final_output_path}")

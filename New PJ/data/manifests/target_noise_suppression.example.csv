@@ -1,0 +1,4 @@
+sample_id,clean_path,noise_path,mixed_path,target_path,noise_label,snr_db,split
+clean_001,data/private/target-noise/clean/train/clean_001.wav,data/private/target-noise/noise/dog_bark/dog_001.wav,data/private/target-noise/generated/mixed/train/clean_001_dog_bark_snr0.wav,data/private/target-noise/clean/train/clean_001.wav,dog_bark,0,train
+clean_002,data/private/target-noise/clean/val/clean_002.wav,data/private/target-noise/noise/car_horn/horn_001.wav,data/private/target-noise/generated/mixed/val/clean_002_car_horn_snr5.wav,data/private/target-noise/clean/val/clean_002.wav,car_horn,5,val
+clean_003,data/private/target-noise/clean/test/clean_003.wav,data/private/target-noise/noise/siren/siren_001.wav,data/private/target-noise/generated/mixed/test/clean_003_siren_snr-5.wav,data/private/target-noise/clean/test/clean_003.wav,siren,-5,test

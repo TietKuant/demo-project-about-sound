@@ -1,0 +1,90 @@
+
+# Python environment
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Package/build metadata
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Test/runtime temp artifacts
+tmp/test-structure-*/
+
+# Local datasets
+data/raw/
+data/processed/
+
+# Manual/runtime pipeline outputs
+tmp/manual-runs/
+tmp/tmp/
+
+# Manual DeepFilterNet smoke test outputs
+tmp/deepfilter-test/
+
+# Manual engine comparison outputs
+tmp/compare-*/
+
+# Benchmark outputs
+outputs/benchmarks/
+outputs/reports/
+
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Manual compare workflow outputs
+outputs/compare-runs/
+
+# UI runtime outputs
+outputs/ui-runs/
+
+# Demo app runtime outputs
+outputs/demo-runs/
+
+# Music separation workflow outputs
+outputs/music-separation-runs/
+
+# Isolated spike environments
+.venv-audio-separator/
+
+# Isolated spike environments
+.venv-demucs/
+
+# External datasets
+data/external/
+data/private/
+
+# Spike outputs
+outputs/spikes/
+
+# Local generated manifests
+data/manifests/*.local.csv
+
+# Vietnamese real sample runtime outputs
+outputs/vietnamese-real-runs/
+
+# Unified task runner outputs
+outputs/audio-task-runs/
+
+# Local audio analysis outputs
+outputs/analysis/
+
+# Generated audit and runtime outputs
+outputs/
+# Python/test/runtime local artifacts
+tmp/
+
+# Generated report figures
+docs/report/figures/
+
+# Frontend generated artifacts
+frontend/node_modules/
+frontend/dist/

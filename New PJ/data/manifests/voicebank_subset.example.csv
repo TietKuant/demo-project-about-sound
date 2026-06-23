@@ -1,0 +1,4 @@
+sample_id,noisy_path,clean_path,split
+p226_001,data/raw/voicebank/noisy_trainset_28spk_wav/p226_001.wav,data/raw/voicebank/clean_trainset_28spk_wav/p226_001.wav,train
+p232_002,data/raw/voicebank/noisy_trainset_28spk_wav/p232_002.wav,data/raw/voicebank/clean_trainset_28spk_wav/p232_002.wav,train
+p257_003,data/raw/voicebank/noisy_testset_wav/p257_003.wav,data/raw/voicebank/clean_testset_wav/p257_003.wav,test

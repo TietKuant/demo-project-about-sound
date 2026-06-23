@@ -170,6 +170,46 @@ class FFmpegWrapper:
         self._run_ffmpeg(command, action="export_audio")
         return final_output_path
 
+    def apply_pitch_effect(
+        self,
+        prepared_audio_path: str | Path,
+        output_path: str | Path,
+        *,
+        pitch_factor: float,
+    ) -> Path:
+        """Apply a duration-compensated pitch shift to normalized 48 kHz audio."""
+        source_audio = Path(prepared_audio_path).resolve()
+        output = Path(output_path).resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        base_sample_rate = 48000
+        shifted_sample_rate = int(round(base_sample_rate * pitch_factor))
+        tempo_factor = 1.0 / pitch_factor
+        filter_value = (
+            f"asetrate={shifted_sample_rate},"
+            f"aresample={base_sample_rate},"
+            f"atempo={tempo_factor:.6f}"
+        )
+        command = [
+            self.ffmpeg_binary,
+            "-y",
+            "-v",
+            "error",
+            "-nostdin",
+            "-i",
+            str(source_audio),
+            "-af",
+            filter_value,
+            "-acodec",
+            "pcm_s16le",
+            "-ac",
+            "1",
+            "-ar",
+            str(base_sample_rate),
+            str(output),
+        ]
+        self._run_ffmpeg(command, action="apply_pitch_effect")
+        return output
+
     def remux_video(
         self,
         input_video_path: str | Path,
