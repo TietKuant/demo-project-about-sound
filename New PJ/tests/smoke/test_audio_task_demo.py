@@ -103,6 +103,26 @@ def test_controller_frontend_renders_staged_app_flow() -> None:
     assert "Run recommended workflow" in app_source
 
 
+def test_controller_frontend_blocks_non_runnable_analyze_transitions() -> None:
+    app_source = (FRONTEND_ROOT / "App.jsx").read_text(encoding="utf-8")
+
+    assert 'controller?.decision === "run_task"' in app_source
+    assert "Boolean(recommendedTask)" in app_source
+    assert 'selectedWorkflow !== "no_process"' in app_source
+    assert "disabled={!canContinueToRun}" in app_source
+    assert "Review required before running" in app_source
+    assert "No runnable workflow selected" in app_source
+
+
+def test_controller_frontend_separates_safety_heading_and_content() -> None:
+    app_source = (FRONTEND_ROOT / "App.jsx").read_text(encoding="utf-8")
+    css_source = (FRONTEND_ROOT / "App.css").read_text(encoding="utf-8")
+
+    assert 'className="analysis-safety"' in app_source
+    assert ".analysis-safety {" in css_source
+    assert "gap: 8px;" in css_source
+
+
 def test_controller_frontend_shows_compact_detection_fusion_summary() -> None:
     app_source = (FRONTEND_ROOT / "App.jsx").read_text(encoding="utf-8")
 

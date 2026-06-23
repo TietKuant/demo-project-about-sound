@@ -347,6 +347,10 @@ select {
   padding-top: 22px;
   border-top: 1px solid #e0e3de;
 }
+.analysis-safety {
+  display: grid;
+  gap: 8px;
+}
 
 .technical-details { overflow: hidden; }
 .technical-details summary {

@@ -176,10 +176,6 @@ export default function App() {
 
   const controller = analysis?.controller;
   const inputUrl = analysis ? `/api/files/${analysis.file_id}?kind=input` : "";
-  const isEnvironmentEventAnalysis =
-    controller?.workflow_kind === "environment_event_analysis";
-  const canRunControllerPlan =
-    controller?.decision === "run_task" || isEnvironmentEventAnalysis;
   const recommendedTask = controller?.recommended_task || "";
 
   const fusionSummary = useMemo(() => {
@@ -197,6 +193,17 @@ export default function App() {
       review_reasons: fusion.review_reasons || [],
     };
   }, [analysis, controller]);
+
+  const selectedWorkflow =
+    controller?.workflow_kind || fusionSummary?.recommended_workflow || "";
+  const canContinueToRun =
+    controller?.decision === "run_task" &&
+    Boolean(recommendedTask) &&
+    selectedWorkflow !== "no_process";
+  const continueActionText =
+    controller?.decision === "manual_required"
+      ? "Review required before running"
+      : "No runnable workflow selected";
 
   const decisionTitle = useMemo(() => {
     if (!controller) return "Waiting for analysis";
@@ -487,16 +494,19 @@ export default function App() {
                     </section>
 
                     <div className="analysis-footer">
-                      <div>
+                      <div className="analysis-safety">
                         <span className="field-label">Safety and alternatives</span>
                         <SafetyNotes controller={controller} />
                       </div>
                       <button
                         className="primary continue-button"
-                        onClick={() => setStep("results")}
+                        onClick={() => {
+                          if (canContinueToRun) setStep("results");
+                        }}
+                        disabled={!canContinueToRun}
                       >
-                        Continue to run
-                        <span aria-hidden="true">→</span>
+                        {canContinueToRun ? "Continue to run" : continueActionText}
+                        {canContinueToRun && <span aria-hidden="true">→</span>}
                       </button>
                     </div>
                   </section>
@@ -522,9 +532,7 @@ export default function App() {
                 <div className="run-selection">
                   <span>Selected / recommended task</span>
                   <h2>{formatLabel(
-                    isEnvironmentEventAnalysis
-                      ? "environment event report"
-                      : recommendedTask || manualTask,
+                    recommendedTask || manualTask,
                   )}</h2>
                   <p>
                     Workflow: <strong>{formatLabel(controller?.workflow_kind)}</strong>
@@ -534,15 +542,13 @@ export default function App() {
                 <button
                   className="primary run-button"
                   onClick={runControllerPlan}
-                  disabled={Boolean(busy) || !canRunControllerPlan}
+                  disabled={Boolean(busy) || !canContinueToRun}
                 >
                   {busy === "recommended"
                     ? "Running…"
-                    : isEnvironmentEventAnalysis
-                      ? "Generate environment report"
-                      : "Run recommended workflow"}
+                    : "Run recommended workflow"}
                 </button>
-                {!canRunControllerPlan && (
+                {!canContinueToRun && (
                   <div className="run-blocked">
                     <strong>Automatic run is unavailable.</strong>
                     <p>{controller?.why || "The controller requires review before processing."}</p>
