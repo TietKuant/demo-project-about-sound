@@ -16,17 +16,17 @@ const TASKS = [
   ["target_noise_suppression", "Target noise suppression (manual-only)"],
 ];
 
-const BADGES = {
-  run_task: "RUN TASK",
-  manual_required: "MANUAL REQUIRED",
-  analyze_only: "ANALYZE ONLY",
-  no_process: "NO PROCESS",
-};
+const STEPS = [
+  ["start", "Start"],
+  ["analyze", "Analyze"],
+  ["results", "Run & results"],
+];
 
-const DECISION_TITLES = {
-  manual_required: "Needs manual review",
-  analyze_only: "Analysis only",
-  no_process: "No processing needed",
+const BADGES = {
+  run_task: "READY TO RUN",
+  manual_required: "REVIEW REQUIRED",
+  analyze_only: "ANALYSIS ONLY",
+  no_process: "NO PROCESS",
 };
 
 async function readJson(response) {
@@ -41,52 +41,14 @@ function displayValue(value) {
   return value == null || value === "" ? "n/a" : String(value);
 }
 
-function displayBoolean(value) {
-  return typeof value === "boolean" ? (value ? "yes" : "no") : "n/a";
-}
-
-function displayConfidence(value) {
+function displayScore(value) {
   return value == null || value === "" || Number.isNaN(Number(value))
     ? "n/a"
     : Number(value).toFixed(3);
 }
 
-function SafetyNotes({ controller }) {
-  const items = [
-    ...(controller?.warnings || []),
-    ...(controller?.blocked_reasons || []),
-    ...(controller?.alternatives || []).map((item) => `Alternative: ${item}`),
-  ];
-  return items.length ? (
-    <div className="safety-list">
-      {items.map((item) => (
-        <span key={item}>{item}</span>
-      ))}
-    </div>
-  ) : (
-    <span className="muted">No safety flags.</span>
-  );
-}
-
-function PipelineStrip({ file, analysis, controller, runResult }) {
-  const hasOutput = Boolean(runResult?.outputs?.length || runResult?.download_url);
-  const stages = [
-    ["Upload", Boolean(file)],
-    ["Analyze", Boolean(analysis)],
-    ["Decide", Boolean(controller)],
-    ["Run", Boolean(runResult)],
-    ["Output", hasOutput],
-  ];
-  return (
-    <nav className="pipeline-strip" aria-label="Processing pipeline">
-      {stages.map(([label, active], index) => (
-        <div className={`pipeline-stage ${active ? "active" : ""}`} key={label}>
-          <span>{index + 1}</span>
-          <strong>{label}</strong>
-        </div>
-      ))}
-    </nav>
-  );
+function formatLabel(value) {
+  return displayValue(value).replaceAll("_", " ");
 }
 
 function MediaPlayer({ src, filename }) {
@@ -99,39 +61,111 @@ function isPlayableMedia(output) {
   if (mediaType.startsWith("audio") || mediaType.startsWith("video")) {
     return true;
   }
-  return /\.(wav|mp3|mp4)$/i.test(output?.path || output?.filename || "");
+  return /\.(wav|mp3|mp4|m4a|flac|ogg)$/i.test(
+    output?.path || output?.filename || "",
+  );
 }
 
-function SelectedPath({ controller }) {
-  const gateBlocked = controller.decision === "manual_required";
-  const runsEngine = controller.decision === "run_task";
-  const noProcessing = ["no_process", "analyze_only"].includes(controller.decision);
+function AppProgress({ step }) {
+  const activeIndex = STEPS.findIndex(([value]) => value === step);
   return (
-    <div className="selected-path">
-      <div className="path-node active"><small>Source</small><strong>Input</strong></div>
-      <span>→</span>
-      <div className="path-node active"><small>Signal</small><strong>Evidence</strong></div>
-      <span>→</span>
-      <div className={`path-node active ${gateBlocked ? "blocked" : ""}`}>
-        <small>Safety</small>
-        <strong>{gateBlocked ? "Policy block" : "Policy gate"}</strong>
-      </div>
-      <span>→</span>
-      <div className={`path-node ${runsEngine || noProcessing ? "active" : ""} ${noProcessing ? "neutral" : ""}`}>
-        <small>Action</small>
-        <strong>
-          {runsEngine
-            ? controller.algorithm || controller.recommended_task
-            : noProcessing
-              ? "No processing"
-              : "Manual review"}
-        </strong>
-      </div>
+    <nav className="app-progress" aria-label="Application progress">
+      {STEPS.map(([value, label], index) => (
+        <div
+          className={`progress-item ${index <= activeIndex ? "active" : ""}`}
+          key={value}
+        >
+          <span>{index + 1}</span>
+          <strong>{label}</strong>
+        </div>
+      ))}
+    </nav>
+  );
+}
+
+function SafetyNotes({ controller }) {
+  const items = [
+    ...(controller?.warnings || []),
+    ...(controller?.blocked_reasons || []),
+    ...(controller?.alternatives || []).map((item) => `Alternative: ${item}`),
+  ];
+  return items.length ? (
+    <div className="tag-list">
+      {items.map((item) => (
+        <span key={item}>{formatLabel(item)}</span>
+      ))}
     </div>
+  ) : (
+    <span className="muted">No safety flags.</span>
+  );
+}
+
+function TechnicalDetails({ analysis, runResult }) {
+  if (!analysis) return null;
+  const payloads = [
+    ["Full controller payload", analysis.controller],
+    ["Router payload", analysis.router],
+    ["Experimental detection fusion payload", analysis.experimental_detection_fusion],
+    ["Detection fusion summary", analysis.detection_fusion_summary],
+    ["Raw features", analysis.features],
+    ["Raw API/run response", runResult],
+  ].filter(([, payload]) => payload != null);
+
+  return (
+    <details className="technical-details">
+      <summary>
+        <span>
+          <strong>Technical details</strong>
+          <small>Controller, router, fusion, features, and raw responses</small>
+        </span>
+        <span className="details-action">Show payloads</span>
+      </summary>
+      <div className="technical-grid">
+        {payloads.map(([title, payload]) => (
+          <section className="payload-card" key={title}>
+            <h3>{title}</h3>
+            <pre>{JSON.stringify(payload, null, 2)}</pre>
+          </section>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function OutputItem({ output }) {
+  const labels = {
+    restored: "Restored audio",
+    enhanced_speech: "Enhanced speech",
+    vocals: "Vocals",
+    no_vocals: "No vocals / instrumental",
+    target_noise_report_json: "Target-noise report (JSON)",
+    target_noise_report_csv: "Target-noise report (CSV)",
+    environment_event_report: "Environment event report",
+  };
+  const title = labels[output.label] || formatLabel(output.label);
+  return (
+    <article className="output-item">
+      <div className="output-label">
+        <span>{isPlayableMedia(output) ? "Audio output" : "Report output"}</span>
+        <h3>{title}</h3>
+      </div>
+      {isPlayableMedia(output) ? (
+        <MediaPlayer src={output.download_url} filename={output.path || output.filename} />
+      ) : (
+        <p className="file-description">
+          {output.media_type || "File"} ·{" "}
+          {output.path?.split("/").pop() || output.filename || "download"}
+        </p>
+      )}
+      <a className="download-button" href={output.download_url} download>
+        Download {title}
+      </a>
+    </article>
   );
 }
 
 export default function App() {
+  const [step, setStep] = useState("start");
   const [file, setFile] = useState(null);
   const [goal, setGoal] = useState("auto");
   const [manualTask, setManualTask] = useState("clean_voice");
@@ -141,12 +175,61 @@ export default function App() {
   const [error, setError] = useState("");
 
   const controller = analysis?.controller;
-  const isExperimental = useMemo(
-    () =>
-      goal === "reduce_target_noise" ||
-      controller?.warnings?.some((item) => item.includes("target_suppressor")),
-    [goal, controller],
-  );
+  const inputUrl = analysis ? `/api/files/${analysis.file_id}?kind=input` : "";
+  const isEnvironmentEventAnalysis =
+    controller?.workflow_kind === "environment_event_analysis";
+  const canRunControllerPlan =
+    controller?.decision === "run_task" || isEnvironmentEventAnalysis;
+  const recommendedTask = controller?.recommended_task || "";
+
+  const fusionSummary = useMemo(() => {
+    if (analysis?.detection_fusion_summary) {
+      return analysis.detection_fusion_summary;
+    }
+    const fusion = analysis?.experimental_detection_fusion;
+    if (!fusion) return null;
+    return {
+      controller: { decision_source: controller?.decision_source || "" },
+      fusion_label: fusion.fusion_label || "",
+      recommended_workflow: fusion.recommended_workflow || "",
+      scores: fusion.detection_scores || {},
+      review_recommended: fusion.review_recommended === true,
+      review_reasons: fusion.review_reasons || [],
+    };
+  }, [analysis, controller]);
+
+  const decisionTitle = useMemo(() => {
+    if (!controller) return "Waiting for analysis";
+    if (controller.decision === "run_task") return "Workflow ready";
+    if (controller.decision === "manual_required") return "Review required";
+    if (controller.decision === "analyze_only") return "Analysis complete";
+    if (controller.decision === "no_process") return "No processing needed";
+    return "Controller decision";
+  }, [controller]);
+
+  const displayedOutputs = useMemo(() => {
+    if (!runResult) return [];
+    if (runResult.outputs?.length) return runResult.outputs;
+    if (!runResult.download_url) return [];
+    const isSpeechWorkflow = ["speech_cleanup", "speech_target_noise_cleanup"].includes(
+      runResult.controller?.workflow_kind || controller?.workflow_kind,
+    );
+    return [{
+      label: isSpeechWorkflow ? "enhanced_speech" : "restored",
+      path: runResult.primary_output_path,
+      download_url: runResult.download_url,
+    }];
+  }, [runResult, controller]);
+
+  const targetNoiseFallback = (
+    runResult?.controller?.workflow_kind || controller?.workflow_kind
+  ) === "speech_target_noise_cleanup";
+
+  function resetAnalysis() {
+    setAnalysis(null);
+    setRunResult(null);
+    setError("");
+  }
 
   async function analyze() {
     if (!file) {
@@ -164,6 +247,9 @@ export default function App() {
         await fetch("/api/analyze", { method: "POST", body: form }),
       );
       setAnalysis(payload);
+      if (payload.controller?.recommended_task) {
+        setManualTask(payload.controller.recommended_task);
+      }
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -171,12 +257,12 @@ export default function App() {
     }
   }
 
-  async function runTask(task, runMode) {
+  async function runTask(task) {
     if (!analysis?.file_id) {
       setError("Analyze the file before running a task.");
       return;
     }
-    setBusy(runMode);
+    setBusy("manual");
     setError("");
     try {
       const payload = await readJson(
@@ -217,331 +303,337 @@ export default function App() {
     }
   }
 
-  const decisionTitle = useMemo(() => {
-    if (!controller) return "WAITING FOR ANALYSIS";
-    if (controller.decision === "run_task") {
-      return {
-        clean_voice: "Ready to clean speech",
-        extract_vocals: "Ready to extract vocals",
-        remove_vocals: "Ready to remove vocals",
-      }[controller.recommended_task] || "Ready to process";
-    }
-    return DECISION_TITLES[controller.decision] || "Controller decision";
-  }, [controller]);
-
-  const modeLabel = goal === "auto"
-    ? "Automatic recommendation mode — the controller only runs a task when evidence is trusted."
-    : "Directed goal verification — the controller checks whether the selected goal maps to a safe engine.";
-  const inputUrl = analysis ? `/api/files/${analysis.file_id}?kind=input` : "";
-  const isEnvironmentEventAnalysis =
-    controller?.workflow_kind === "environment_event_analysis";
-  const canRunControllerPlan =
-    controller?.decision === "run_task" || isEnvironmentEventAnalysis;
-
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">AUDIO CONTROL / SAFE ROUTING</p>
-          <h1>Target-Aware Audio Processing Controller</h1>
-          <p className="subtitle">
-            Upload audio or video, choose a goal, and let the controller recommend a safe path.
-          </p>
-        </div>
-        <div className="system-status">
-          <span className="pulse" />
-          Local processing
-        </div>
-      </header>
-
-      <div className="workspace">
-        <aside className="control-card">
-          <div className="section-heading">
-            <span>01</span>
-            <div>
-              <h2>Control input</h2>
-              <p>Choose the source and intended outcome.</p>
-            </div>
+    <main className={`app-shell step-${step}`}>
+      {step === "start" ? (
+        <section className="landing-page">
+          <div className="landing-status">
+            <span className="pulse" />
+            Local processing
           </div>
-
-          <label className="upload-zone">
-            <input
-              type="file"
-              accept="audio/*,video/*"
-              onChange={(event) => {
-                setFile(event.target.files?.[0] || null);
-                setAnalysis(null);
-                setRunResult(null);
-                setError("");
-              }}
-            />
-            <span className="upload-icon">↥</span>
-            <strong>{file ? file.name : "Drop or choose a media file"}</strong>
-            <small>{file ? `${(file.size / 1048576).toFixed(2)} MB` : "Audio and video supported"}</small>
-          </label>
-
-          <label className="field">
-            <span>Processing goal</span>
-            <select
-              value={goal}
-              onChange={(event) => {
-                setGoal(event.target.value);
-                setAnalysis(null);
-                setRunResult(null);
-                setError("");
-              }}
-            >
-              {GOALS.map(([value, label]) => (
-                <option value={value} key={value}>{label}</option>
-              ))}
-            </select>
-          </label>
-
-          <div className="button-row">
-            <button className="secondary" onClick={analyze} disabled={Boolean(busy)}>
-              {busy === "analyze" ? "Analyzing…" : "Analyze"}
-            </button>
-            <button
-              className="primary"
-              onClick={runControllerPlan}
-              disabled={Boolean(busy) || !canRunControllerPlan}
-            >
-              {busy === "recommended"
-                ? isEnvironmentEventAnalysis
-                  ? "Generating report…"
-                  : "Running…"
-                : isEnvironmentEventAnalysis
-                  ? "Generate environment report"
-                  : "Run controller plan"}
+          <div className="landing-copy">
+            <p className="eyebrow">AUDIO CONTROL / SAFE ROUTING</p>
+            <h1>Target-Aware Audio Processing Controller</h1>
+            <p>
+              Upload audio or video, let the controller analyze it, then run the
+              recommended workflow.
+            </p>
+            <button className="primary landing-button" onClick={() => setStep("analyze")}>
+              Start analysis
+              <span aria-hidden="true">→</span>
             </button>
           </div>
-
-          <details className="advanced-controls">
-            <summary>Advanced</summary>
-            <div className="advanced-content">
-              <label className="field">
-                <span>Manual task override</span>
-                <select
-                  value={manualTask}
-                  onChange={(event) => setManualTask(event.target.value)}
-                >
-                  {TASKS.map(([value, label]) => (
-                    <option value={value} key={value}>{label}</option>
-                  ))}
-                </select>
-              </label>
-              <button
-                className="manual-button"
-                onClick={() => runTask(manualTask, "manual")}
-                disabled={Boolean(busy) || !analysis}
-              >
-                {busy === "manual" ? "Running…" : "Run manual override"}
-              </button>
-            </div>
-          </details>
-
-          {error && <div className="error-box">{error}</div>}
-        </aside>
-
-        <section className="main-panel">
-          <PipelineStrip
-            file={file}
-            analysis={analysis}
-            controller={controller}
-            runResult={runResult}
-          />
-
-          {analysis && (
-            <section className="input-preview-card">
-              <div className="card-heading">
-                <div>
-                  <p className="eyebrow">INPUT PREVIEW</p>
-                  <h2>{analysis.filename}</h2>
-                </div>
-                <span className="file-chip">{file?.type || "media"}</span>
-              </div>
-              <MediaPlayer src={inputUrl} filename={analysis.filename} />
-              <div className="fact-row">
-                <div><span>Duration</span><strong>{analysis.features.duration_sec || "n/a"} s</strong></div>
-                <div><span>RMS</span><strong>{analysis.features.rms_energy || "n/a"}</strong></div>
-                <div><span>Centroid</span><strong>{analysis.features.spectral_centroid_hz || "n/a"} Hz</strong></div>
-                <div>
-                  <span>Router</span>
-                  <strong>
-                    {analysis.router.predicted_label || "No trusted label"}
-                    {analysis.router.confidence != null ? ` · ${displayConfidence(analysis.router.confidence)}` : ""}
-                    {analysis.router.guard_applied ? " · guarded block" : ""}
-                    {analysis.router.final_workflow ? ` · ${analysis.router.final_workflow}` : ""}
-                  </strong>
-                </div>
-              </div>
-            </section>
-          )}
-
-          <div className={`decision-card ${isExperimental ? "experimental" : ""}`}>
-            <div className="decision-topline">
-              <div>
-                <p className="eyebrow">CONTROLLER DECISION</p>
-                <span className="mode-label">{modeLabel}</span>
-                <h2>{decisionTitle}</h2>
-              </div>
-              {controller && (
-                <span className={`badge badge-${controller.decision}`}>
-                  {BADGES[controller.decision] || controller.decision}
-                </span>
-              )}
-            </div>
-
-            {controller ? (
-              <>
-                <div className="plan-label">Selected path</div>
-                <SelectedPath controller={controller} />
-                <div className="decision-grid">
-                  <div>
-                    <span>Recommended next step</span>
-                    <strong>{controller.recommended_task || "None"}</strong>
-                  </div>
-                  <div>
-                    <span>Engine / algorithm</span>
-                    <strong>
-                      {[controller.engine_family, controller.algorithm].filter(Boolean).join(" / ") || "None"}
-                    </strong>
-                  </div>
-                </div>
-                <div className="why">
-                  <span>Why</span>
-                  <p>{controller.why}</p>
-                </div>
-                <div>
-                  <span className="label">Safety notes</span>
-                  <SafetyNotes controller={controller} />
-                </div>
-              </>
-            ) : (
-              <div className="empty-state">
-                <div className="wave">▂▄▆█▆▄▂</div>
-                <p>Analyze a file to see the safe processing recommendation.</p>
-                <div className="proof-card">
-                  <strong>What this demo proves</strong>
-                  <ul>
-                    <li>Safe abstention when confidence is low</li>
-                    <li>Goal-directed routing for clear user intent</li>
-                    <li>Expert execution through DeepFilterNet and Demucs</li>
-                    <li>Experimental target suppression is blocked by policy</li>
-                  </ul>
-                </div>
-              </div>
-            )}
+          <div className="landing-visual" aria-hidden="true">
+            <div className="sound-line">▂▄▆█▆▄▂</div>
+            <span>Analyze</span>
+            <i />
+            <span>Decide</span>
+            <i />
+            <span>Process</span>
           </div>
+        </section>
+      ) : (
+        <div className="application-page">
+          <header className="app-header">
+            <button className="brand-button" onClick={() => setStep("start")}>
+              <span>TA</span>
+              <strong>Target-Aware Controller</strong>
+            </button>
+            <div className="system-status">
+              <span className="pulse" />
+              Local processing
+            </div>
+          </header>
 
-          {analysis && (
-            <details className="evidence-card">
-              <summary>
-                <span>Detailed evidence</span>
-                <small>Router and signal features</small>
-              </summary>
-              <div className="evidence-grid">
-                <div>
-                  <h3>Router</h3>
-                  <dl>
-                    <dt>Status</dt><dd>{analysis.router.status}</dd>
-                    <dt>Label</dt><dd>{analysis.router.predicted_label || "n/a"}</dd>
-                    <dt>Confidence</dt><dd>{displayConfidence(analysis.router.confidence)}</dd>
-                    <dt>Accepted</dt><dd>{displayBoolean(analysis.router.accepted)}</dd>
-                    <dt>Decision reason</dt><dd>{displayValue(analysis.router.decision_reason)}</dd>
-                    <dt>Guard applied</dt><dd>{displayBoolean(analysis.router.guard_applied)}</dd>
-                    <dt>Final workflow</dt><dd>{displayValue(analysis.router.final_workflow)}</dd>
-                    <dt>Final accepted</dt><dd>{displayBoolean(analysis.router.final_accepted)}</dd>
-                    <dt>Speech gate label</dt><dd>{displayValue(analysis.router.speech_gate_label)}</dd>
-                    <dt>Speech gate confidence</dt><dd>{displayConfidence(analysis.router.speech_gate_confidence)}</dd>
-                  </dl>
-                  {analysis.router.guard_applied && (
-                    <p className="muted">
-                      Speech cleanup was blocked by the speech-present safety gate.
-                    </p>
-                  )}
-                </div>
-                <div>
-                  <h3>Signal features</h3>
-                  <dl>
-                    {Object.entries(analysis.features).map(([key, value]) => (
-                      <div className="feature-row" key={key}>
-                        <dt>{key.replaceAll("_", " ")}</dt>
-                        <dd>{value || "n/a"}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                </div>
+          <AppProgress step={step} />
+
+          {step === "analyze" && (
+            <section className="work-page">
+              <div className="page-intro">
+                <p className="eyebrow">STEP 2 / ANALYZE</p>
+                <h1>Understand the source before processing.</h1>
+                <p>Choose a file and goal. The controller will recommend a safe workflow.</p>
               </div>
-            </details>
-          )}
 
-          {runResult && (
-            <section className={`output-card ${runResult.status === "blocked" ? "blocked" : ""}`}>
-              {runResult.status === "blocked" ? (
-                <div className="policy-block">
-                  <p className="eyebrow">POLICY GATE</p>
-                  <h2>Run blocked safely</h2>
-                  <p>{runResult.controller?.why || "The selected task is not permitted for automatic execution."}</p>
-                  <SafetyNotes controller={runResult.controller} />
+              <section className="input-card">
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">SOURCE</p>
+                    <h2>Audio or video input</h2>
+                  </div>
+                  {file && <span className="file-chip">{(file.size / 1048576).toFixed(2)} MB</span>}
                 </div>
-              ) : runResult.status === "no_process" ? (
-                <div className="policy-block no-process">
-                  <p className="eyebrow">CONTROLLER PLAN</p>
-                  <h2>No processing needed</h2>
-                  <p>{runResult.controller?.why}</p>
+                <div className="input-grid">
+                  <label className="upload-zone">
+                    <input
+                      type="file"
+                      accept="audio/*,video/*"
+                      onChange={(event) => {
+                        setFile(event.target.files?.[0] || null);
+                        resetAnalysis();
+                      }}
+                    />
+                    <span className="upload-icon">↥</span>
+                    <strong>{file ? file.name : "Choose a media file"}</strong>
+                    <small>Audio and video supported</small>
+                  </label>
+                  <div className="input-actions">
+                    <label className="field">
+                      <span>Processing goal</span>
+                      <select
+                        value={goal}
+                        onChange={(event) => {
+                          setGoal(event.target.value);
+                          resetAnalysis();
+                        }}
+                      >
+                        {GOALS.map(([value, label]) => (
+                          <option value={value} key={value}>{label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      className="primary analyze-button"
+                      onClick={analyze}
+                      disabled={Boolean(busy)}
+                    >
+                      {busy === "analyze" ? "Analyzing…" : "Analyze"}
+                    </button>
+                  </div>
                 </div>
-              ) : (
+                {error && <div className="error-box">{error}</div>}
+              </section>
+
+              {analysis && (
                 <>
-                  <div className="output-heading">
-                    <p className="eyebrow">PROCESSING OUTPUT</p>
-                    <h2>Before and after</h2>
-                    <p>{runResult.error || runResult.controller?.why}</p>
-                  </div>
-                  <div className="comparison-grid">
-                    <div className="media-panel">
-                      <span>Before</span>
-                      <MediaPlayer src={inputUrl} filename={analysis?.filename} />
-                    </div>
-                    {(runResult.outputs || (
-                      runResult.download_url
-                        ? [{
-                            label: "processed_output",
-                            path: runResult.primary_output_path,
-                            download_url: runResult.download_url,
-                          }]
-                        : []
-                    )).map((output) => (
-                      <div className="media-panel after" key={output.label}>
-                        <span>
-                          {{
-                            vocals: "Vocals",
-                            no_vocals: "Instrumental",
-                            enhanced_speech: "Enhanced speech",
-                          }[output.label] || output.label.replaceAll("_", " ")}
-                        </span>
-                        {isPlayableMedia(output) ? (
-                          <MediaPlayer src={output.download_url} filename={output.path} />
-                        ) : (
-                          <div>
-                            <strong>{output.label.replaceAll("_", " ")}</strong>
-                            <p className="muted">
-                              {output.media_type || "File"} · {output.path?.split("/").pop() || output.filename || "report"}
-                            </p>
-                          </div>
-                        )}
-                        <a className="download-button" href={output.download_url} download>
-                          Download {output.label.replaceAll("_", " ")}
-                        </a>
+                  <section className="analysis-summary">
+                    <div className="summary-heading">
+                      <div>
+                        <p className="eyebrow">ANALYSIS COMPLETE</p>
+                        <h2>{analysis.filename}</h2>
                       </div>
-                    ))}
-                  </div>
+                      <span className={`badge badge-${controller?.decision}`}>
+                        {BADGES[controller?.decision] || displayValue(controller?.decision)}
+                      </span>
+                    </div>
+
+                    <div className="decision-cards">
+                      <article className="metric-card primary-decision">
+                        <span>Primary controller decision</span>
+                        <strong>{decisionTitle}</strong>
+                        <p>{controller?.why || "No controller explanation was returned."}</p>
+                      </article>
+                      <article className="metric-card">
+                        <span>Recommended task</span>
+                        <strong>{formatLabel(recommendedTask || "None")}</strong>
+                      </article>
+                      <article className="metric-card">
+                        <span>Recommended workflow</span>
+                        <strong>{formatLabel(
+                          fusionSummary?.recommended_workflow ||
+                          controller?.workflow_kind ||
+                          "None",
+                        )}</strong>
+                      </article>
+                      <article className="metric-card">
+                        <span>Decision source</span>
+                        <strong>{formatLabel(
+                          fusionSummary?.controller?.decision_source ||
+                          controller?.decision_source,
+                        )}</strong>
+                      </article>
+                    </div>
+
+                    <section className="fusion-card">
+                      <div className="fusion-heading">
+                        <div>
+                          <p className="eyebrow">DETECTION FUSION SUGGESTION</p>
+                          <h3>{formatLabel(fusionSummary?.fusion_label || "Unavailable")}</h3>
+                          <p>
+                            Suggested workflow:{" "}
+                            <strong>{formatLabel(
+                              fusionSummary?.recommended_workflow || "Unavailable",
+                            )}</strong>
+                          </p>
+                        </div>
+                        <span className={`review-chip ${fusionSummary?.review_recommended ? "warn" : ""}`}>
+                          Review {fusionSummary?.review_recommended ? "recommended" : "not required"}
+                        </span>
+                      </div>
+                      <div className="score-grid">
+                        {[
+                          ["speech_present", "Speech present"],
+                          ["music_present", "Music present"],
+                          ["target_event_present", "Target event present"],
+                        ].map(([key, label]) => (
+                          <div key={key}>
+                            <span>{label}</span>
+                            <strong>{displayScore(fusionSummary?.scores?.[key])}</strong>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="review-reasons">
+                        <span>Review reasons</span>
+                        {fusionSummary?.review_reasons?.length ? (
+                          <div className="tag-list">
+                            {fusionSummary.review_reasons.map((reason) => (
+                              <span key={reason}>{formatLabel(reason)}</span>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="muted">No review reasons reported.</p>
+                        )}
+                      </div>
+                    </section>
+
+                    <div className="analysis-footer">
+                      <div>
+                        <span className="field-label">Safety and alternatives</span>
+                        <SafetyNotes controller={controller} />
+                      </div>
+                      <button
+                        className="primary continue-button"
+                        onClick={() => setStep("results")}
+                      >
+                        Continue to run
+                        <span aria-hidden="true">→</span>
+                      </button>
+                    </div>
+                  </section>
+
+                  <TechnicalDetails analysis={analysis} runResult={runResult} />
                 </>
               )}
             </section>
           )}
-        </section>
-      </div>
+
+          {step === "results" && (
+            <section className="results-page">
+              <div className="page-intro results-intro">
+                <button className="text-button" onClick={() => setStep("analyze")}>
+                  ← Back to analysis
+                </button>
+                <p className="eyebrow">STEP 3 / RUN & RESULTS</p>
+                <h1>Run the selected workflow.</h1>
+                <p>Review the controller choice, process the file, and download each output.</p>
+              </div>
+
+              <section className="run-card">
+                <div className="run-selection">
+                  <span>Selected / recommended task</span>
+                  <h2>{formatLabel(
+                    isEnvironmentEventAnalysis
+                      ? "environment event report"
+                      : recommendedTask || manualTask,
+                  )}</h2>
+                  <p>
+                    Workflow: <strong>{formatLabel(controller?.workflow_kind)}</strong>
+                    {" · "}Source: <strong>{formatLabel(controller?.decision_source)}</strong>
+                  </p>
+                </div>
+                <button
+                  className="primary run-button"
+                  onClick={runControllerPlan}
+                  disabled={Boolean(busy) || !canRunControllerPlan}
+                >
+                  {busy === "recommended"
+                    ? "Running…"
+                    : isEnvironmentEventAnalysis
+                      ? "Generate environment report"
+                      : "Run recommended workflow"}
+                </button>
+                {!canRunControllerPlan && (
+                  <div className="run-blocked">
+                    <strong>Automatic run is unavailable.</strong>
+                    <p>{controller?.why || "The controller requires review before processing."}</p>
+                    <SafetyNotes controller={controller} />
+                  </div>
+                )}
+                <details className="manual-controls">
+                  <summary>Manual task override</summary>
+                  <div>
+                    <label className="field">
+                      <span>Task</span>
+                      <select
+                        value={manualTask}
+                        onChange={(event) => setManualTask(event.target.value)}
+                      >
+                        {TASKS.map(([value, label]) => (
+                          <option value={value} key={value}>{label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      className="secondary"
+                      onClick={() => runTask(manualTask)}
+                      disabled={Boolean(busy)}
+                    >
+                      {busy === "manual" ? "Running…" : "Run manual task"}
+                    </button>
+                  </div>
+                </details>
+                {error && <div className="error-box">{error}</div>}
+              </section>
+
+              {runResult && (
+                <section className={`results-card ${runResult.status === "blocked" ? "blocked" : ""}`}>
+                  {runResult.status === "blocked" ? (
+                    <div className="result-message">
+                      <p className="eyebrow">POLICY GATE</p>
+                      <h2>Run blocked safely</h2>
+                      <p>{runResult.controller?.why || "This task cannot be run automatically."}</p>
+                      <SafetyNotes controller={runResult.controller} />
+                    </div>
+                  ) : runResult.status === "no_process" ? (
+                    <div className="result-message">
+                      <p className="eyebrow">CONTROLLER RESULT</p>
+                      <h2>No processing needed</h2>
+                      <p>{runResult.controller?.why}</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="results-heading">
+                        <div>
+                          <p className="eyebrow">OUTPUTS READY</p>
+                          <h2>Processing results</h2>
+                          <p>{runResult.error || "Download or preview the generated outputs below."}</p>
+                        </div>
+                        <span className="success-chip">{displayValue(runResult.status)}</span>
+                      </div>
+
+                      {targetNoiseFallback && (
+                        <div className="target-noise-notice">
+                          <strong>Safe target-noise fallback</strong>
+                          <p>
+                            Enhanced speech is produced by safe speech enhancement.
+                            The target-noise JSON and CSV reports are attached as
+                            evidence/report outputs.
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="output-context">
+                        <article>
+                          <span>Original input</span>
+                          <h3>{analysis?.filename}</h3>
+                          <MediaPlayer src={inputUrl} filename={analysis?.filename} />
+                        </article>
+                      </div>
+                      <div className="output-grid">
+                        {displayedOutputs.map((output) => (
+                          <OutputItem output={output} key={output.label} />
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </section>
+              )}
+
+              <TechnicalDetails analysis={analysis} runResult={runResult} />
+            </section>
+          )}
+        </div>
+      )}
     </main>
   );
 }

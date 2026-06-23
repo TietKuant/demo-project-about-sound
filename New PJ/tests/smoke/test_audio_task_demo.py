@@ -25,6 +25,9 @@ from app.audio_task_demo import (
 from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, REMOVE_VOCALS, TARGET_NOISE_SUPPRESSION
 
 
+FRONTEND_ROOT = Path(__file__).resolve().parents[2] / "frontend" / "src"
+
+
 @pytest.fixture(autouse=True)
 def _disable_router_checkpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(ROUTER_CHECKPOINT_ENV_VAR, raising=False)
@@ -86,6 +89,53 @@ def _feature_row(
         "spectral_bandwidth_hz": spectral_bandwidth_hz,
         "error": error,
     }
+
+
+def test_controller_frontend_renders_staged_app_flow() -> None:
+    app_source = (FRONTEND_ROOT / "App.jsx").read_text(encoding="utf-8")
+
+    assert "export default function App()" in app_source
+    assert "Target-Aware Audio Processing Controller" in app_source
+    assert "Start analysis" in app_source
+    assert 'setStep("analyze")' in app_source
+    assert "Continue to run" in app_source
+    assert 'setStep("results")' in app_source
+    assert "Run recommended workflow" in app_source
+
+
+def test_controller_frontend_shows_compact_detection_fusion_summary() -> None:
+    app_source = (FRONTEND_ROOT / "App.jsx").read_text(encoding="utf-8")
+
+    assert "analysis?.detection_fusion_summary" in app_source
+    assert "analysis?.experimental_detection_fusion" in app_source
+    assert "DETECTION FUSION SUGGESTION" in app_source
+    assert "speech_present" in app_source
+    assert "music_present" in app_source
+    assert "target_event_present" in app_source
+    assert "Review reasons" in app_source
+
+
+def test_controller_frontend_keeps_technical_payloads_collapsed() -> None:
+    app_source = (FRONTEND_ROOT / "App.jsx").read_text(encoding="utf-8")
+
+    assert '<details className="technical-details">' in app_source
+    assert '<details className="technical-details" open' not in app_source
+    assert "Full controller payload" in app_source
+    assert "Router payload" in app_source
+    assert "Experimental detection fusion payload" in app_source
+    assert "Detection fusion summary" in app_source
+    assert "Raw features" in app_source
+    assert "Raw API/run response" in app_source
+
+
+def test_controller_frontend_labels_target_noise_outputs_and_safe_fallback() -> None:
+    app_source = (FRONTEND_ROOT / "App.jsx").read_text(encoding="utf-8")
+
+    assert 'enhanced_speech: "Enhanced speech"' in app_source
+    assert 'target_noise_report_json: "Target-noise report (JSON)"' in app_source
+    assert 'target_noise_report_csv: "Target-noise report (CSV)"' in app_source
+    assert "Enhanced speech is produced by safe speech enhancement." in app_source
+    assert "evidence/report outputs" in app_source
 
 
 def test_analyze_demo_input_recommends_clean_voice_for_speech_intent(tmp_path: Path) -> None:
