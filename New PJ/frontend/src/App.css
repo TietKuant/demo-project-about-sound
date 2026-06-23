@@ -471,6 +471,26 @@ select {
 .output-context h3 { margin: 7px 0 12px; font-size: .96rem; overflow-wrap: anywhere; }
 .output-context audio, .output-context video { width: 100%; max-height: 260px; }
 .output-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+.report-output-section {
+  margin-top: 24px;
+  padding-top: 22px;
+  border-top: 1px solid #dfe3dd;
+}
+.report-output-heading h3 { margin-bottom: 7px; font-size: 1.1rem; }
+.report-output-heading > p:last-child {
+  max-width: 680px;
+  margin-bottom: 0;
+  color: #69706a;
+  font-size: .84rem;
+  line-height: 1.55;
+}
+.report-output-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 14px;
+}
+.report-output-grid .output-item { background: #f5f5f1; }
 .output-item {
   min-width: 0;
   display: grid;
@@ -512,7 +532,7 @@ select {
   .metric-card.primary-decision { grid-column: auto; }
   .analysis-footer { align-items: stretch; flex-direction: column; }
   .continue-button { width: 100%; }
-  .technical-grid, .output-grid { grid-template-columns: 1fr; }
+  .technical-grid, .output-grid, .report-output-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 560px) {

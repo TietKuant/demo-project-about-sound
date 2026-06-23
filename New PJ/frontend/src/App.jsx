@@ -3,8 +3,7 @@ import { useMemo, useState } from "react";
 const GOALS = [
   ["auto", "Auto detect / not sure"],
   ["improve_speech_clarity", "Improve speech clarity"],
-  ["extract_vocals", "Extract vocals"],
-  ["remove_vocals", "Remove vocals"],
+  ["extract_vocals", "Vocal / instrumental separation"],
   ["reduce_target_noise", "Target noise reduction (experimental)"],
   ["analyze_only", "Analyze only"],
 ];
@@ -49,6 +48,42 @@ function displayScore(value) {
 
 function formatLabel(value) {
   return displayValue(value).replaceAll("_", " ");
+}
+
+function displayWorkflowLabel(workflow) {
+  if (workflow === "music_separation_package") {
+    return "Vocal / instrumental separation";
+  }
+  return formatLabel(workflow);
+}
+
+function displayTaskLabel(task, workflow) {
+  if (workflow === "music_separation_package") {
+    return "Separate vocals and instrumental";
+  }
+  return formatLabel(task);
+}
+
+function displayOutputLabel(label) {
+  const normalized = String(label || "").toLowerCase();
+  if (["vocals", "vocal"].includes(normalized)) return "Vocals";
+  if (["no_vocals", "accompaniment", "instrumental"].includes(normalized)) {
+    return "Instrumental";
+  }
+  const labels = {
+    restored: "Restored audio",
+    enhanced_speech: "Enhanced speech",
+    target_noise_report_json: "Target-noise report (JSON)",
+    target_noise_report_csv: "Target-noise report (CSV)",
+    environment_event_report: "Environment event report",
+  };
+  return labels[normalized] || formatLabel(label);
+}
+
+function isTargetNoiseReport(output) {
+  return ["target_noise_report_json", "target_noise_report_csv"].includes(
+    String(output?.label || "").toLowerCase(),
+  );
 }
 
 function MediaPlayer({ src, filename }) {
@@ -133,16 +168,7 @@ function TechnicalDetails({ analysis, runResult }) {
 }
 
 function OutputItem({ output }) {
-  const labels = {
-    restored: "Restored audio",
-    enhanced_speech: "Enhanced speech",
-    vocals: "Vocals",
-    no_vocals: "No vocals / instrumental",
-    target_noise_report_json: "Target-noise report (JSON)",
-    target_noise_report_csv: "Target-noise report (CSV)",
-    environment_event_report: "Environment event report",
-  };
-  const title = labels[output.label] || formatLabel(output.label);
+  const title = displayOutputLabel(output.label);
   return (
     <article className="output-item">
       <div className="output-label">
@@ -199,11 +225,15 @@ export default function App() {
   const canContinueToRun =
     controller?.decision === "run_task" &&
     Boolean(recommendedTask) &&
-    selectedWorkflow !== "no_process";
+    !["no_process", "safe_abstain"].includes(selectedWorkflow);
   const continueActionText =
     controller?.decision === "manual_required"
       ? "Review required before running"
       : "No runnable workflow selected";
+  const recommendedActionText =
+    selectedWorkflow === "music_separation_package"
+      ? "Run vocal / instrumental separation"
+      : "Run recommended workflow";
 
   const decisionTitle = useMemo(() => {
     if (!controller) return "Waiting for analysis";
@@ -218,15 +248,30 @@ export default function App() {
     if (!runResult) return [];
     if (runResult.outputs?.length) return runResult.outputs;
     if (!runResult.download_url) return [];
-    const isSpeechWorkflow = ["speech_cleanup", "speech_target_noise_cleanup"].includes(
-      runResult.controller?.workflow_kind || controller?.workflow_kind,
-    );
+    const workflow =
+      runResult.controller?.workflow_kind || controller?.workflow_kind;
+    const fallbackLabel = ["speech_cleanup", "speech_target_noise_cleanup"].includes(
+      workflow,
+    )
+      ? "enhanced_speech"
+      : workflow === "music_separation_package"
+        ? "vocals"
+        : "restored";
     return [{
-      label: isSpeechWorkflow ? "enhanced_speech" : "restored",
+      label: fallbackLabel,
       path: runResult.primary_output_path,
       download_url: runResult.download_url,
     }];
   }, [runResult, controller]);
+
+  const primaryOutputs = useMemo(
+    () => displayedOutputs.filter((output) => !isTargetNoiseReport(output)),
+    [displayedOutputs],
+  );
+  const targetNoiseReportOutputs = useMemo(
+    () => displayedOutputs.filter(isTargetNoiseReport),
+    [displayedOutputs],
+  );
 
   const targetNoiseFallback = (
     runResult?.controller?.workflow_kind || controller?.workflow_kind
@@ -432,13 +477,16 @@ export default function App() {
                       </article>
                       <article className="metric-card">
                         <span>Recommended task</span>
-                        <strong>{formatLabel(recommendedTask || "None")}</strong>
+                        <strong>{displayTaskLabel(
+                          recommendedTask || "None",
+                          selectedWorkflow,
+                        )}</strong>
                       </article>
                       <article className="metric-card">
                         <span>Recommended workflow</span>
-                        <strong>{formatLabel(
-                          fusionSummary?.recommended_workflow ||
+                        <strong>{displayWorkflowLabel(
                           controller?.workflow_kind ||
+                          fusionSummary?.recommended_workflow ||
                           "None",
                         )}</strong>
                       </article>
@@ -458,7 +506,7 @@ export default function App() {
                           <h3>{formatLabel(fusionSummary?.fusion_label || "Unavailable")}</h3>
                           <p>
                             Suggested workflow:{" "}
-                            <strong>{formatLabel(
+                            <strong>{displayWorkflowLabel(
                               fusionSummary?.recommended_workflow || "Unavailable",
                             )}</strong>
                           </p>
@@ -531,11 +579,12 @@ export default function App() {
               <section className="run-card">
                 <div className="run-selection">
                   <span>Selected / recommended task</span>
-                  <h2>{formatLabel(
+                  <h2>{displayTaskLabel(
                     recommendedTask || manualTask,
+                    selectedWorkflow,
                   )}</h2>
                   <p>
-                    Workflow: <strong>{formatLabel(controller?.workflow_kind)}</strong>
+                    Workflow: <strong>{displayWorkflowLabel(controller?.workflow_kind)}</strong>
                     {" · "}Source: <strong>{formatLabel(controller?.decision_source)}</strong>
                   </p>
                 </div>
@@ -546,7 +595,7 @@ export default function App() {
                 >
                   {busy === "recommended"
                     ? "Running…"
-                    : "Run recommended workflow"}
+                    : recommendedActionText}
                 </button>
                 {!canContinueToRun && (
                   <div className="run-blocked">
@@ -609,11 +658,10 @@ export default function App() {
 
                       {targetNoiseFallback && (
                         <div className="target-noise-notice">
-                          <strong>Safe target-noise fallback</strong>
+                          <strong>Target-specific suppression is experimental</strong>
                           <p>
-                            Enhanced speech is produced by safe speech enhancement.
-                            The target-noise JSON and CSV reports are attached as
-                            evidence/report outputs.
+                            This workflow uses safe speech enhancement and provides
+                            a target-noise report. It does not claim full target removal.
                           </p>
                         </div>
                       )}
@@ -626,10 +674,27 @@ export default function App() {
                         </article>
                       </div>
                       <div className="output-grid">
-                        {displayedOutputs.map((output) => (
+                        {primaryOutputs.map((output) => (
                           <OutputItem output={output} key={output.label} />
                         ))}
                       </div>
+                      {targetNoiseReportOutputs.length > 0 && (
+                        <section className="report-output-section">
+                          <div className="report-output-heading">
+                            <p className="eyebrow">DETECTION EVIDENCE / REPORT</p>
+                            <h3>Target-noise evidence reports</h3>
+                            <p>
+                              Download the JSON and CSV detection evidence/report
+                              files used to explain this result.
+                            </p>
+                          </div>
+                          <div className="report-output-grid">
+                            {targetNoiseReportOutputs.map((output) => (
+                              <OutputItem output={output} key={output.label} />
+                            ))}
+                          </div>
+                        </section>
+                      )}
                     </>
                   )}
                 </section>

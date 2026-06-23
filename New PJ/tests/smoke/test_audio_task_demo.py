@@ -103,12 +103,41 @@ def test_controller_frontend_renders_staged_app_flow() -> None:
     assert "Run recommended workflow" in app_source
 
 
+def test_controller_frontend_presents_music_as_one_package_workflow() -> None:
+    app_source = (FRONTEND_ROOT / "App.jsx").read_text(encoding="utf-8")
+
+    assert 'workflow === "music_separation_package"' in app_source
+    assert "Vocal / instrumental separation" in app_source
+    assert "Separate vocals and instrumental" in app_source
+    assert "Run vocal / instrumental separation" in app_source
+    assert app_source.count('["extract_vocals", "Vocal / instrumental separation"]') == 1
+
+
+def test_controller_frontend_normalizes_music_output_labels() -> None:
+    app_source = (FRONTEND_ROOT / "App.jsx").read_text(encoding="utf-8")
+
+    assert '["vocals", "vocal"].includes(normalized)' in app_source
+    assert '["no_vocals", "accompaniment", "instrumental"].includes(normalized)' in app_source
+    assert 'return "Vocals"' in app_source
+    assert 'return "Instrumental"' in app_source
+    assert "No vocals / instrumental" not in app_source
+
+
+def test_controller_frontend_keeps_target_noise_claims_honest() -> None:
+    app_source = (FRONTEND_ROOT / "App.jsx").read_text(encoding="utf-8")
+
+    assert "Target-specific suppression is experimental" in app_source
+    assert "safe speech enhancement" in app_source
+    assert "target-noise report" in app_source
+    assert "does not claim full target removal" in app_source
+
+
 def test_controller_frontend_blocks_non_runnable_analyze_transitions() -> None:
     app_source = (FRONTEND_ROOT / "App.jsx").read_text(encoding="utf-8")
 
     assert 'controller?.decision === "run_task"' in app_source
     assert "Boolean(recommendedTask)" in app_source
-    assert 'selectedWorkflow !== "no_process"' in app_source
+    assert '["no_process", "safe_abstain"].includes(selectedWorkflow)' in app_source
     assert "disabled={!canContinueToRun}" in app_source
     assert "Review required before running" in app_source
     assert "No runnable workflow selected" in app_source
@@ -154,8 +183,36 @@ def test_controller_frontend_labels_target_noise_outputs_and_safe_fallback() -> 
     assert 'enhanced_speech: "Enhanced speech"' in app_source
     assert 'target_noise_report_json: "Target-noise report (JSON)"' in app_source
     assert 'target_noise_report_csv: "Target-noise report (CSV)"' in app_source
-    assert "Enhanced speech is produced by safe speech enhancement." in app_source
-    assert "evidence/report outputs" in app_source
+    assert "safe speech enhancement" in app_source
+    assert "target-noise report" in app_source
+    assert "does not claim full target removal" in app_source
+
+
+def test_controller_frontend_groups_target_noise_reports_after_primary_audio() -> None:
+    app_source = (FRONTEND_ROOT / "App.jsx").read_text(encoding="utf-8")
+    css_source = (FRONTEND_ROOT / "App.css").read_text(encoding="utf-8")
+
+    assert "isTargetNoiseReport" in app_source
+    assert "primaryOutputs.map" in app_source
+    assert "targetNoiseReportOutputs.map" in app_source
+    assert "Target-noise evidence reports" in app_source
+    assert "DETECTION EVIDENCE / REPORT" in app_source
+    assert "detection evidence/report" in app_source
+    assert 'className="report-output-section"' in app_source
+    assert ".report-output-section {" in css_source
+
+
+def test_controller_frontend_builds_fallback_primary_output_card() -> None:
+    app_source = (FRONTEND_ROOT / "App.jsx").read_text(encoding="utf-8")
+
+    assert "if (runResult.outputs?.length) return runResult.outputs;" in app_source
+    assert "if (!runResult.download_url) return [];" in app_source
+    assert 'workflow === "music_separation_package"' in app_source
+    assert '? "enhanced_speech"' in app_source
+    assert '? "vocals"' in app_source
+    assert "path: runResult.primary_output_path" in app_source
+    assert "download_url: runResult.download_url" in app_source
+    assert "primaryOutputs.map" in app_source
 
 
 def test_analyze_demo_input_recommends_clean_voice_for_speech_intent(tmp_path: Path) -> None:
