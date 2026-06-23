@@ -215,6 +215,19 @@ def test_controller_frontend_builds_fallback_primary_output_card() -> None:
     assert "primaryOutputs.map" in app_source
 
 
+def test_controller_frontend_lists_manual_voice_effects_only_in_override() -> None:
+    app_source = (FRONTEND_ROOT / "App.jsx").read_text(encoding="utf-8")
+
+    assert 'const MANUAL_VOICE_EFFECTS = [' in app_source
+    assert '["voice_pitch_high", "High pitch voice"]' in app_source
+    assert '["voice_pitch_low", "Low pitch voice"]' in app_source
+    assert '<optgroup label="Manual voice effects">' in app_source
+    assert "Run high pitch voice" in app_source
+    assert "Run low pitch voice" in app_source
+    assert "recommendedActionText" in app_source
+    assert "displayTaskLabel(" in app_source
+
+
 def test_analyze_demo_input_recommends_clean_voice_for_speech_intent(tmp_path: Path) -> None:
     input_path = tmp_path / "speech.wav"
     input_path.write_bytes(b"audio")

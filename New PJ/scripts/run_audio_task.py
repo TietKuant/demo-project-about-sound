@@ -18,12 +18,15 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.run_music_separation import run_music_separation
 from src.api.contracts import DenoiseRequest
 from src.io.paths import derive_output_mode, infer_input_type
+from src.media.ffmpeg_wrapper import FFmpegWrapper
 from src.pipeline.run_pipeline import run_pipeline
 from src.router.task_registry import (
     CLEAN_VOICE,
     EXTRACT_VOCALS,
     REMOVE_VOCALS,
     TARGET_NOISE_SUPPRESSION,
+    VOICE_PITCH_HIGH,
+    VOICE_PITCH_LOW,
     get_task_spec,
     list_supported_tasks,
 )
@@ -41,6 +44,10 @@ FIELDNAMES = [
     "error",
 ]
 MUSIC_TASKS = {EXTRACT_VOCALS, REMOVE_VOCALS}
+VOICE_PITCH_FACTORS = {
+    VOICE_PITCH_HIGH: 1.25,
+    VOICE_PITCH_LOW: 0.75,
+}
 
 
 def _run_id_for_input(input_path: Path) -> str:
@@ -184,6 +191,19 @@ def run_audio_task(
             )
             status = "success"
             primary_output_path = str(inference_paths["output"])
+        elif task in VOICE_PITCH_FACTORS:
+            ffmpeg = FFmpegWrapper()
+            ffmpeg.probe_input(source)
+            prepared_path = ffmpeg.prepare_audio(source, run_dir)
+            effect_name = "high_pitch" if task == VOICE_PITCH_HIGH else "low_pitch"
+            output_path = run_dir / f"{source.stem}.{effect_name}.wav"
+            ffmpeg.apply_pitch_effect(
+                prepared_path,
+                output_path,
+                pitch_factor=VOICE_PITCH_FACTORS[task],
+            )
+            status = "success"
+            primary_output_path = str(output_path)
         else:
             error = f"Unsupported task: {task}"
     except Exception as exc:

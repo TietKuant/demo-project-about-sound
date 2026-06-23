@@ -50,6 +50,9 @@ from src.router.task_registry import (
     EXTRACT_VOCALS,
     REMOVE_VOCALS,
     TARGET_NOISE_SUPPRESSION,
+    VOICE_PITCH_HIGH,
+    VOICE_PITCH_LOW,
+    get_task_spec,
 )
 
 
@@ -86,6 +89,7 @@ TASK_GOALS = {
     REMOVE_VOCALS: REMOVE_VOCALS_GOAL,
     TARGET_NOISE_SUPPRESSION: REDUCE_TARGET_NOISE,
 }
+MANUAL_VOICE_EFFECT_TASKS = {VOICE_PITCH_HIGH, VOICE_PITCH_LOW}
 FEATURE_FIELDS = [
     "duration_sec",
     "rms_energy",
@@ -165,6 +169,24 @@ def _plan_payload(
         "warnings": plan.warnings,
         "blocked_reasons": plan.blocked_reasons,
         "alternatives": plan.alternatives,
+    }
+
+
+def _manual_voice_effect_controller_payload(task: str) -> dict[str, Any]:
+    task_spec = get_task_spec(task)
+    return {
+        "decision": ACTION_RUN_TASK,
+        "decision_source": "manual_override",
+        "workflow_kind": "manual_voice_effect",
+        "recommended_task": task,
+        "recommended_tasks": [task],
+        "engine_family": task_spec.engine,
+        "algorithm": "ffmpeg_pitch_shift",
+        "expected_outputs": task_spec.output_labels,
+        "why": "User-selected manual voice effect.",
+        "warnings": ["manual_voice_effect"],
+        "blocked_reasons": [],
+        "alternatives": [],
     }
 
 
@@ -663,7 +685,8 @@ async def analyze(file: UploadFile = File(...), goal: str = Form(...)) -> dict[s
 @api.post("/api/run")
 def run(request: RunRequest) -> dict[str, Any]:
     goal = TASK_GOALS.get(request.task)
-    if goal is None:
+    manual_voice_effect = request.task in MANUAL_VOICE_EFFECT_TASKS
+    if goal is None and not manual_voice_effect:
         raise HTTPException(status_code=400, detail=f"Unsupported task: {request.task}")
 
     metadata = _read_metadata(request.file_id)
@@ -675,7 +698,12 @@ def run(request: RunRequest) -> dict[str, Any]:
         == DETECTION_FUSION_ACTIVE_WARNING
         and analyze_controller.get("recommended_task") == request.task
     )
-    if preserve_active_fusion:
+    if manual_voice_effect:
+        plan = None
+        controller_payload = _manual_voice_effect_controller_payload(
+            request.task
+        )
+    elif preserve_active_fusion:
         plan = _plan_from_metadata(metadata, input_path)
         controller_payload = analyze_controller
     else:
@@ -691,7 +719,10 @@ def run(request: RunRequest) -> dict[str, Any]:
             _demo_capabilities(),
         )
         controller_payload = _plan_payload(plan)
-    if plan.action != ACTION_RUN_TASK or plan.blocked_reasons:
+    if (
+        not manual_voice_effect
+        and (plan.action != ACTION_RUN_TASK or plan.blocked_reasons)
+    ):
         return {
             "status": "blocked",
             "task": request.task,
@@ -712,6 +743,7 @@ def run(request: RunRequest) -> dict[str, Any]:
     if (
         summary.get("status") == "success"
         and preserve_active_fusion
+        and plan is not None
         and plan.workflow_kind == WORKFLOW_SPEECH_TARGET_NOISE_CLEANUP
         and request.task == CLEAN_VOICE
     ):
@@ -731,6 +763,16 @@ def run(request: RunRequest) -> dict[str, Any]:
                 run_dir=run_dir,
             )
         )
+        _store_artifacts(metadata, artifacts, run_dir)
+    elif summary.get("status") == "success" and manual_voice_effect:
+        label = get_task_spec(request.task).display_name
+        artifacts = [
+            _output_artifact(
+                request.file_id,
+                label,
+                Path(primary_output_path),
+            )
+        ]
         _store_artifacts(metadata, artifacts, run_dir)
     else:
         metadata["primary_output_path"] = primary_output_path

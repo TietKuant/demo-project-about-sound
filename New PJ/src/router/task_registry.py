@@ -9,6 +9,8 @@ CLEAN_VOICE = "clean_voice"
 TARGET_NOISE_SUPPRESSION = "target_noise_suppression"
 EXTRACT_VOCALS = "extract_vocals"
 REMOVE_VOCALS = "remove_vocals"
+VOICE_PITCH_HIGH = "voice_pitch_high"
+VOICE_PITCH_LOW = "voice_pitch_low"
 
 
 @dataclass(slots=True)
@@ -55,6 +57,22 @@ _TASK_DEFINITIONS: tuple[dict[str, object], ...] = (
         "engine": "demucs",
         "output_labels": ["no_vocals", "vocals"],
         "input_kind": "audio_or_video_with_music",
+    },
+    {
+        "name": VOICE_PITCH_HIGH,
+        "display_name": "High pitch voice",
+        "description": "Manual voice effects: raise voice pitch while preserving approximate duration.",
+        "engine": "ffmpeg",
+        "output_labels": ["High pitch voice"],
+        "input_kind": "audio_or_video",
+    },
+    {
+        "name": VOICE_PITCH_LOW,
+        "display_name": "Low pitch voice",
+        "description": "Manual voice effects: lower voice pitch while preserving approximate duration.",
+        "engine": "ffmpeg",
+        "output_labels": ["Low pitch voice"],
+        "input_kind": "audio_or_video",
     },
 )
 _TASK_DEFINITIONS_BY_NAME = {str(task["name"]): task for task in _TASK_DEFINITIONS}

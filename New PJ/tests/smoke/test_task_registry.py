@@ -9,6 +9,8 @@ from src.router.task_registry import (
     EXTRACT_VOCALS,
     REMOVE_VOCALS,
     TARGET_NOISE_SUPPRESSION,
+    VOICE_PITCH_HIGH,
+    VOICE_PITCH_LOW,
     get_task_spec,
     is_supported_task,
     list_supported_tasks,
@@ -20,10 +22,27 @@ class TaskRegistrySmokeTests(unittest.TestCase):
         tasks = list_supported_tasks()
         names = [task.name for task in tasks]
 
-        self.assertEqual(names, [CLEAN_VOICE, TARGET_NOISE_SUPPRESSION, EXTRACT_VOCALS, REMOVE_VOCALS])
+        self.assertEqual(
+            names,
+            [
+                CLEAN_VOICE,
+                TARGET_NOISE_SUPPRESSION,
+                EXTRACT_VOCALS,
+                REMOVE_VOCALS,
+                VOICE_PITCH_HIGH,
+                VOICE_PITCH_LOW,
+            ],
+        )
         self.assertEqual(
             {task.name for task in tasks},
-            {CLEAN_VOICE, TARGET_NOISE_SUPPRESSION, EXTRACT_VOCALS, REMOVE_VOCALS},
+            {
+                CLEAN_VOICE,
+                TARGET_NOISE_SUPPRESSION,
+                EXTRACT_VOCALS,
+                REMOVE_VOCALS,
+                VOICE_PITCH_HIGH,
+                VOICE_PITCH_LOW,
+            },
         )
 
     def test_get_task_spec_returns_clean_voice_metadata(self) -> None:
@@ -47,6 +66,19 @@ class TaskRegistrySmokeTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "Unsupported task: transcribe_audio"):
             get_task_spec("transcribe_audio")
+
+    def test_voice_pitch_tasks_are_registered_as_manual_ffmpeg_effects(self) -> None:
+        high = get_task_spec(VOICE_PITCH_HIGH)
+        low = get_task_spec(VOICE_PITCH_LOW)
+
+        self.assertEqual(high.display_name, "High pitch voice")
+        self.assertEqual(low.display_name, "Low pitch voice")
+        self.assertEqual(high.engine, "ffmpeg")
+        self.assertEqual(low.engine, "ffmpeg")
+        self.assertEqual(high.input_kind, "audio_or_video")
+        self.assertEqual(low.input_kind, "audio_or_video")
+        self.assertIn("Manual voice effects", high.description)
+        self.assertIn("Manual voice effects", low.description)
 
     def test_vocal_tasks_map_to_demucs_with_different_primary_output_order(self) -> None:
         extract = get_task_spec(EXTRACT_VOCALS)

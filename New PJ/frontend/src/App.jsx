@@ -8,11 +8,15 @@ const GOALS = [
   ["analyze_only", "Analyze only"],
 ];
 
-const TASKS = [
+const MANUAL_WORKFLOW_TASKS = [
   ["clean_voice", "Clean voice"],
   ["extract_vocals", "Extract vocals"],
   ["remove_vocals", "Remove vocals"],
   ["target_noise_suppression", "Target noise suppression (manual-only)"],
+];
+const MANUAL_VOICE_EFFECTS = [
+  ["voice_pitch_high", "High pitch voice"],
+  ["voice_pitch_low", "Low pitch voice"],
 ];
 
 const STEPS = [
@@ -76,6 +80,8 @@ function displayOutputLabel(label) {
     target_noise_report_json: "Target-noise report (JSON)",
     target_noise_report_csv: "Target-noise report (CSV)",
     environment_event_report: "Environment event report",
+    "high pitch voice": "High pitch voice",
+    "low pitch voice": "Low pitch voice",
   };
   return labels[normalized] || formatLabel(label);
 }
@@ -234,6 +240,10 @@ export default function App() {
     selectedWorkflow === "music_separation_package"
       ? "Run vocal / instrumental separation"
       : "Run recommended workflow";
+  const manualActionText = {
+    voice_pitch_high: "Run high pitch voice",
+    voice_pitch_low: "Run low pitch voice",
+  }[manualTask] || "Run manual task";
 
   const decisionTitle = useMemo(() => {
     if (!controller) return "Waiting for analysis";
@@ -613,9 +623,16 @@ export default function App() {
                         value={manualTask}
                         onChange={(event) => setManualTask(event.target.value)}
                       >
-                        {TASKS.map(([value, label]) => (
-                          <option value={value} key={value}>{label}</option>
-                        ))}
+                        <optgroup label="Manual workflow override">
+                          {MANUAL_WORKFLOW_TASKS.map(([value, label]) => (
+                            <option value={value} key={value}>{label}</option>
+                          ))}
+                        </optgroup>
+                        <optgroup label="Manual voice effects">
+                          {MANUAL_VOICE_EFFECTS.map(([value, label]) => (
+                            <option value={value} key={value}>{label}</option>
+                          ))}
+                        </optgroup>
                       </select>
                     </label>
                     <button
@@ -623,7 +640,7 @@ export default function App() {
                       onClick={() => runTask(manualTask)}
                       disabled={Boolean(busy)}
                     >
-                      {busy === "manual" ? "Running…" : "Run manual task"}
+                      {busy === "manual" ? "Running…" : manualActionText}
                     </button>
                   </div>
                 </details>

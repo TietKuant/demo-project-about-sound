@@ -9,7 +9,14 @@ from unittest.mock import patch
 
 from scripts.run_audio_task import run_audio_task
 from src.api.contracts import DenoiseResult
-from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, REMOVE_VOCALS, TARGET_NOISE_SUPPRESSION
+from src.router.task_registry import (
+    CLEAN_VOICE,
+    EXTRACT_VOCALS,
+    REMOVE_VOCALS,
+    TARGET_NOISE_SUPPRESSION,
+    VOICE_PITCH_HIGH,
+    VOICE_PITCH_LOW,
+)
 
 
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:
@@ -176,6 +183,91 @@ def test_target_noise_suppression_calls_inference_and_writes_success_summary(tmp
     assert rows[0]["engine"] == "target_noise_suppressor"
     assert rows[0]["status"] == "success"
     assert rows[0]["primary_output_path"].endswith("speech.target_noise_suppressed.wav")
+
+
+def test_voice_pitch_tasks_use_duration_compensated_ffmpeg_filters(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "speech.wav"
+    input_path.write_bytes(b"audio")
+
+    for task, expected_filter, expected_suffix in (
+        (
+            VOICE_PITCH_HIGH,
+            "asetrate=60000,aresample=48000,atempo=0.800000",
+            ".high_pitch.wav",
+        ),
+        (
+            VOICE_PITCH_LOW,
+            "asetrate=36000,aresample=48000,atempo=1.333333",
+            ".low_pitch.wav",
+        ),
+    ):
+        calls: list[tuple[str, object]] = []
+
+        def probe_input(source: Path) -> object:
+            calls.append(("probe", source))
+            return object()
+
+        def prepare_audio(source: Path, run_dir: Path) -> Path:
+            calls.append(("prepare", (source, run_dir)))
+            prepared = run_dir / "prepared.wav"
+            prepared.write_bytes(b"prepared")
+            return prepared
+
+        def apply_pitch_effect(
+            prepared: Path,
+            output: Path,
+            *,
+            pitch_factor: float,
+        ) -> Path:
+            calls.append(("effect", (prepared, output, pitch_factor)))
+            output.write_bytes(b"effect")
+            return output
+
+        with (
+            patch(
+                "scripts.run_audio_task.FFmpegWrapper.probe_input",
+                side_effect=probe_input,
+            ),
+            patch(
+                "scripts.run_audio_task.FFmpegWrapper.prepare_audio",
+                side_effect=prepare_audio,
+            ),
+            patch(
+                "scripts.run_audio_task.FFmpegWrapper.apply_pitch_effect",
+                side_effect=apply_pitch_effect,
+            ),
+        ):
+            run_dir = run_audio_task(
+                task=task,
+                input_path=input_path,
+                output_root=tmp_path / "outputs",
+            )
+
+        effect_call = next(value for name, value in calls if name == "effect")
+        assert Path(effect_call[1]).name.endswith(expected_suffix)
+        expected_factor = 1.25 if task == VOICE_PITCH_HIGH else 0.75
+        assert effect_call[2] == expected_factor
+        rows = _read_csv_rows(run_dir / "summary.csv")
+        assert rows[0]["status"] == "success"
+        assert rows[0]["engine"] == "ffmpeg"
+
+        with patch(
+            "src.media.ffmpeg_wrapper.FFmpegWrapper._run_ffmpeg"
+        ) as ffmpeg_mock:
+            from src.media.ffmpeg_wrapper import FFmpegWrapper
+
+            output_path = tmp_path / f"{task}.wav"
+            FFmpegWrapper().apply_pitch_effect(
+                input_path,
+                output_path,
+                pitch_factor=expected_factor,
+            )
+
+        assert ffmpeg_mock.call_args.args[0][
+            ffmpeg_mock.call_args.args[0].index("-af") + 1
+        ] == expected_filter
 
 
 def test_target_noise_suppression_missing_checkpoint_writes_failed_summary(tmp_path: Path) -> None:

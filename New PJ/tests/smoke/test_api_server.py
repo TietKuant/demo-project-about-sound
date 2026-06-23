@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import csv
+import io
+import subprocess
+import wave
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,7 +13,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.api_server as api_server
-from src.router.task_registry import CLEAN_VOICE, EXTRACT_VOCALS, TARGET_NOISE_SUPPRESSION
+from src.router.task_registry import (
+    CLEAN_VOICE,
+    EXTRACT_VOCALS,
+    TARGET_NOISE_SUPPRESSION,
+    VOICE_PITCH_HIGH,
+    VOICE_PITCH_LOW,
+)
 
 
 @pytest.fixture()
@@ -50,6 +59,16 @@ def _router_result() -> dict[str, object]:
         "decision_reason": "router_checkpoint_not_configured",
         "warnings": [],
     }
+
+
+def _wav_bytes() -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(16000)
+        wav_file.writeframes(b"\x00\x00" * 1600)
+    return buffer.getvalue()
 
 
 def _analyze(
@@ -488,6 +507,64 @@ def test_api_run_blocks_target_noise_suppression(client: TestClient) -> None:
     payload = response.json()
     assert payload["status"] == "blocked"
     assert "target_noise_suppression_manual_only" in payload["controller"]["blocked_reasons"]
+
+
+@pytest.mark.parametrize(
+    ("task", "label", "filename_suffix"),
+    [
+        (VOICE_PITCH_HIGH, "High pitch voice", ".high_pitch.wav"),
+        (VOICE_PITCH_LOW, "Low pitch voice", ".low_pitch.wav"),
+    ],
+)
+def test_api_run_manual_voice_pitch_effect(
+    client: TestClient,
+    task: str,
+    label: str,
+    filename_suffix: str,
+) -> None:
+    with (
+        patch("app.api_server._extract_feature_row", return_value=_feature_row()),
+        patch("app.api_server._optional_router_result", return_value=_router_result()),
+    ):
+        analyzed = client.post(
+            "/api/analyze",
+            data={"goal": "auto"},
+            files={"file": ("speech.wav", _wav_bytes(), "audio/wav")},
+        ).json()
+
+    def mock_ffmpeg(
+        command: list[str],
+        **_: object,
+    ) -> subprocess.CompletedProcess[str]:
+        if command[-1] != "-":
+            output_path = Path(command[-1])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(_wav_bytes())
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    with patch(
+        "src.media.ffmpeg_wrapper.subprocess.run",
+        side_effect=mock_ffmpeg,
+    ):
+        response = client.post(
+            "/api/run",
+            json={"file_id": analyzed["file_id"], "task": task},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "success"
+    assert payload["task"] == task
+    assert payload["controller"]["decision_source"] == "manual_override"
+    assert payload["controller"]["workflow_kind"] == "manual_voice_effect"
+    assert payload["primary_output_path"].endswith(filename_suffix)
+    assert Path(payload["primary_output_path"]).is_file()
+    assert [artifact["label"] for artifact in payload["outputs"]] == [label]
+    assert payload["outputs"][0]["media_type"] == "audio"
+    assert payload["download_url"] == payload["outputs"][0]["download_url"]
+    downloaded = client.get(payload["download_url"])
+    assert downloaded.status_code == 200
+    assert downloaded.content == _wav_bytes()
 
 
 def test_api_run_clean_voice_and_serve_output(client: TestClient) -> None:
