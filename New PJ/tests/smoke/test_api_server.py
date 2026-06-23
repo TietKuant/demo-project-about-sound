@@ -167,6 +167,33 @@ def _fusion_payload(
     }
 
 
+def _assert_fusion_summary(
+    payload: dict[str, object],
+    *,
+    decision_source: str,
+    fusion_label: str,
+    workflow: str,
+    speech: float,
+    music: float,
+    target: float,
+    active: bool,
+) -> None:
+    assert payload["detection_fusion_summary"] == {
+        "controller": {"decision_source": decision_source},
+        "fusion_label": fusion_label,
+        "recommended_workflow": workflow,
+        "scores": {
+            "speech_present": speech,
+            "music_present": music,
+            "target_event_present": target,
+        },
+        "review_recommended": False,
+        "review_reasons": [],
+        "route_mode": "active" if active else "off",
+        "active_route_mode": active,
+    }
+
+
 def test_detection_fusion_route_mode_off_preserves_primary_abstain(
     client: TestClient,
 ) -> None:
@@ -185,6 +212,16 @@ def test_detection_fusion_route_mode_off_preserves_primary_abstain(
 
     assert payload["controller"]["decision"] == "manual_required"
     assert payload["controller"]["decision_source"] == "primary_router"
+    _assert_fusion_summary(
+        payload,
+        decision_source="primary_router",
+        fusion_label="speech_present_general",
+        workflow="speech_cleanup",
+        speech=0.95,
+        music=0.05,
+        target=0.10,
+        active=False,
+    )
 
 
 @pytest.mark.parametrize(
@@ -330,6 +367,113 @@ def test_active_detection_fusion_does_not_promote_environment_or_weak_scores(
     assert payload["controller"]["decision"] == "manual_required"
     assert payload["controller"]["workflow_kind"] == "safe_abstain"
     assert payload["controller"]["decision_source"] == "primary_router"
+
+
+def test_active_detection_fusion_demo_smoke(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(api_server.DETECTION_FUSION_ROUTE_MODE_ENV_VAR, "active")
+    speech_fusion = _fusion_payload(
+        "speech_present_general",
+        speech=0.94,
+        music=0.10,
+        target=0.20,
+        workflow="speech_cleanup",
+    )
+    with patch(
+        "app.api_server._experimental_detection_fusion",
+        return_value=speech_fusion,
+    ):
+        speech_analyzed = _analyze(client, goal="auto")
+
+    assert speech_analyzed["controller"]["decision"] == "run_task"
+    assert speech_analyzed["controller"]["recommended_task"] == CLEAN_VOICE
+    _assert_fusion_summary(
+        speech_analyzed,
+        decision_source="detection_fusion_active",
+        fusion_label="speech_present_general",
+        workflow="speech_cleanup",
+        speech=0.94,
+        music=0.10,
+        target=0.20,
+        active=True,
+    )
+
+    target_fusion = _fusion_payload(
+        "speech_target_noise",
+        speech=0.93,
+        music=0.05,
+        target=0.96,
+        workflow="speech_target_noise_cleanup",
+    )
+    with patch(
+        "app.api_server._experimental_detection_fusion",
+        return_value=target_fusion,
+    ):
+        target_analyzed = _analyze(client, goal="auto")
+
+    assert target_analyzed["controller"]["workflow_kind"] == (
+        "speech_target_noise_cleanup"
+    )
+    _assert_fusion_summary(
+        target_analyzed,
+        decision_source="detection_fusion_active",
+        fusion_label="speech_target_noise",
+        workflow="speech_target_noise_cleanup",
+        speech=0.93,
+        music=0.05,
+        target=0.96,
+        active=True,
+    )
+
+    def mock_run_audio_task(**kwargs: object) -> Path:
+        run_dir = Path(kwargs["output_root"]) / CLEAN_VOICE / "demo-smoke-run"
+        output_path = run_dir / "speech.restored.wav"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"enhanced")
+        _write_task_summary(run_dir, CLEAN_VOICE, output_path)
+        return run_dir
+
+    with patch(
+        "app.api_server.run_audio_task",
+        side_effect=mock_run_audio_task,
+    ):
+        run_response = client.post(
+            "/api/run",
+            json={
+                "file_id": target_analyzed["file_id"],
+                "task": CLEAN_VOICE,
+            },
+        )
+
+    assert [artifact["label"] for artifact in run_response.json()["outputs"]] == [
+        "enhanced_speech",
+        "target_noise_report_json",
+        "target_noise_report_csv",
+    ]
+
+    environment_fusion = _fusion_payload(
+        "environment_only",
+        speech=0.10,
+        music=0.10,
+        target=0.95,
+        workflow="environment_event_analysis",
+    )
+    with patch(
+        "app.api_server._experimental_detection_fusion",
+        return_value=environment_fusion,
+    ):
+        environment_analyzed = _analyze(client, goal="auto")
+
+    with patch("app.api_server.run_audio_task") as run_mock:
+        environment_run = client.post(
+            "/api/run-plan",
+            json={"file_id": environment_analyzed["file_id"]},
+        )
+
+    run_mock.assert_not_called()
+    assert environment_run.json()["status"] == "blocked"
 
 
 def test_api_run_blocks_target_noise_suppression(client: TestClient) -> None:

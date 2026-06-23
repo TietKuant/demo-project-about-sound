@@ -193,6 +193,41 @@ def _feature_payload(feature_row: dict[str, str]) -> dict[str, str]:
     return {field: str(feature_row.get(field, "")) for field in FEATURE_FIELDS}
 
 
+def _detection_fusion_summary(
+    controller: dict[str, Any],
+    fusion: dict[str, Any],
+) -> dict[str, Any]:
+    scores = dict(fusion.get("detection_scores") or {})
+
+    def score(name: str) -> float | None:
+        value = scores.get(name)
+        return float(value) if isinstance(value, (int, float)) else None
+
+    route_mode = os.environ.get(
+        DETECTION_FUSION_ROUTE_MODE_ENV_VAR, "off"
+    ).strip().lower()
+    return {
+        "controller": {
+            "decision_source": str(controller.get("decision_source") or ""),
+        },
+        "fusion_label": str(fusion.get("fusion_label") or ""),
+        "recommended_workflow": str(
+            fusion.get("recommended_workflow") or ""
+        ),
+        "scores": {
+            "speech_present": score("speech_present"),
+            "music_present": score("music_present"),
+            "target_event_present": score("target_event_present"),
+        },
+        "review_recommended": fusion.get("review_recommended") is True,
+        "review_reasons": [
+            str(reason) for reason in fusion.get("review_reasons") or []
+        ],
+        "route_mode": route_mode,
+        "active_route_mode": route_mode == "active",
+    }
+
+
 def _experimental_detection_fusion(input_path: Path) -> dict[str, Any]:
     checkpoint_values = {
         "head_checkpoint": os.environ.get(
@@ -593,6 +628,10 @@ async def analyze(file: UploadFile = File(...), goal: str = Form(...)) -> dict[s
         facts=facts,
     )
     controller_payload = _plan_payload(plan, decision_source)
+    detection_fusion_summary = _detection_fusion_summary(
+        controller_payload,
+        experimental_detection_fusion,
+    )
     metadata = {
         "file_id": file_id,
         "filename": filename,
@@ -605,6 +644,7 @@ async def analyze(file: UploadFile = File(...), goal: str = Form(...)) -> dict[s
         "decision_source": decision_source,
         "controller": controller_payload,
         "experimental_detection_fusion": experimental_detection_fusion,
+        "detection_fusion_summary": detection_fusion_summary,
         "primary_output_path": "",
         "outputs_by_label": {},
     }
@@ -616,6 +656,7 @@ async def analyze(file: UploadFile = File(...), goal: str = Form(...)) -> dict[s
         "router": _router_payload(router_result),
         "features": _feature_payload(feature_row),
         "experimental_detection_fusion": experimental_detection_fusion,
+        "detection_fusion_summary": detection_fusion_summary,
     }
 
 
